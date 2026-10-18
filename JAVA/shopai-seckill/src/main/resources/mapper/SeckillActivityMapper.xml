@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shopai.seckill.mapper.SeckillActivityMapper">
+
+    <!-- 公共列：避免各处 select * 导致新增字段时行为漂移 -->
+    <sql id="Base_Column_List">
+        id, title, merchant_id, start_time, end_time, status, per_user_limit, description,
+        total_stock, sold_count, version, deleted, created_at, updated_at
+    </sql>
+
+    <!--
+      待预热活动：状态 pending、开抢时间已进入预热窗口、且该活动下还有未预热的 SKU。
+      用 EXISTS 子查询而不是 JOIN，避免一个活动有多条未预热 SKU 时被放大成多行。
+    -->
+    <select id="selectNeedPreheat" resultType="com.shopai.seckill.entity.SeckillActivity">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_activity a
+        WHERE a.deleted = 0
+          AND a.status = 'pending'
+          AND a.start_time &gt; #{now}
+          AND a.start_time &lt;= #{until}
+          AND EXISTS (
+              SELECT 1 FROM seckill_stock s
+              WHERE s.activity_id = a.id
+                AND s.deleted = 0
+                AND s.preheated = 0
+          )
+        ORDER BY a.start_time ASC
+    </select>
+
+    <!-- 到点该开始的活动：pending 且 start_time <= now -->
+    <select id="selectShouldStart" resultType="com.shopai.seckill.entity.SeckillActivity">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_activity
+        WHERE deleted = 0
+          AND status = 'pending'
+          AND start_time &lt;= #{now}
+          AND end_time &gt; #{now}
+        ORDER BY start_time ASC
+    </select>
+
+    <!-- 到点该结束的活动：running 且 end_time <= now -->
+    <select id="selectShouldEnd" resultType="com.shopai.seckill.entity.SeckillActivity">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_activity
+        WHERE deleted = 0
+          AND status = 'running'
+          AND end_time &lt;= #{now}
+        ORDER BY end_time ASC
+    </select>
+
+    <!--
+      已售件数累加。
+      必须用 sold_count = sold_count + #{qty}（数据库侧自增），
+      不能「先 SELECT 再 UPDATE 写回」—— 并发成单时后者会丢更新。
+    -->
+    <update id="increaseSoldCount">
+        UPDATE seckill_activity
+        SET sold_count = sold_count + #{qty},
+            updated_at = NOW()
+        WHERE id = #{activityId}
+          AND deleted = 0
+    </update>
+
+    <!--
+      汇总回写活动总库存：发布活动时调用，把各 SKU 额度之和写进冗余字段，
+      避免活动列表页为了显示总量去聚合 seckill_stock。
+    -->
+    <update id="refreshTotalStock">
+        UPDATE seckill_activity a
+        SET a.total_stock = COALESCE((
+                SELECT SUM(s.total_stock)
+                FROM seckill_stock s
+                WHERE s.activity_id = a.id
+                  AND s.deleted = 0
+            ), 0),
+            a.updated_at  = NOW()
+        WHERE a.id = #{activityId}
+          AND a.deleted = 0
+    </update>
+
+</mapper>

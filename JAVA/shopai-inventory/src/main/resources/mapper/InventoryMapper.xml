@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  库存 Mapper XML（shopai-inventory 服务）
+  微服务拆分说明：对接独立 inventory 表，实现乐观锁扣减/回补。
+  扣减 SQL 保证并发下不超卖（WHERE stock >= #{qty}）。
+-->
+<mapper namespace="com.shopai.inventory.mapper.InventoryMapper">
+
+    <!-- 库存表字段 -->
+    <sql id="Base_Column_List">
+        id, sku_id, stock, locked_stock, version, updated_at
+    </sql>
+
+    <!-- 按 SKU ID 查询库存 -->
+    <select id="selectBySkuId" resultType="com.shopai.inventory.entity.Inventory">
+        SELECT <include refid="Base_Column_List"/>
+        FROM inventory
+        WHERE sku_id = #{skuId}
+        LIMIT 1
+    </select>
+
+    <!--
+      乐观锁扣减库存（核心：防超卖）
+      仅当 stock >= 扣减数量时成功；version 自增用于乐观锁冲突检测。
+      注意：此处未用 version 作为 WHERE 条件（避免重试复杂度），
+      而是依赖 MySQL 行锁 + stock >= #{qty} 的原子判断保证不超卖；
+      如需严格乐观锁可改为 WHERE sku_id = #{skuId} AND version = 预期值。
+    -->
+    <update id="deductStock">
+        UPDATE inventory
+        SET stock = stock - #{qty},
+            version = version + 1
+        WHERE sku_id = #{skuId}
+          AND stock >= #{qty}
+    </update>
+
+    <!-- 回补库存（订单取消/退款时调用） -->
+    <update id="restoreStock">
+        UPDATE inventory
+        SET stock = stock + #{qty},
+            version = version + 1
+        WHERE sku_id = #{skuId}
+    </update>
+
+    <!-- 增加可售库存（SKU 补货/初始化用） -->
+    <update id="increaseStock">
+        UPDATE inventory
+        SET stock = stock + #{qty},
+            version = version + 1
+        WHERE sku_id = #{skuId}
+    </update>
+
+</mapper>

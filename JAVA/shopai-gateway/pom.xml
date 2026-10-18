@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ======================================================================
+     shopai-gateway 网关模块
+     职责：统一 JWT 认证、路由转发、限流。
+     技术：Spring Cloud Gateway（WebFlux 反应式，非 servlet）。
+     注意：本模块不引入 spring-boot-starter-web（与 WebFlux 冲突），
+           因此不引用 common 里依赖 servlet-web 的类（WebMvcConfig / LongToStringResponseAdvice）。
+     ====================================================================== -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shopai</groupId>
+        <artifactId>shopai-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shopai-gateway</artifactId>
+    <packaging>jar</packaging>
+    <name>shopai-gateway</name>
+    <description>网关：统一认证 + 路由 + 限流</description>
+
+    <dependencies>
+        <!-- Spring Cloud Gateway（WebFlux）
+             注：Spring Cloud 2023.0.x 中该 starter 的 artifactId 为 spring-cloud-starter-gateway；
+             2024/2025（Boot 4）才改名为 spring-cloud-starter-gateway-server-webflux。 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway</artifactId>
+        </dependency>
+        <!-- Nacos 服务发现 -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <!--
+          Spring Cloud LoadBalancer（必须显式声明！）
+
+          网关路由用的 uri 是 lb://shopai-product 这类「服务名」形式，
+          需要 ReactiveLoadBalancerClientFilter（由 spring-cloud-starter-loadbalancer 提供）
+          把服务名解析成具体实例地址。
+
+          为什么必须显式加：spring-cloud-gateway-server 的 pom 里虽然列了
+          spring-cloud-loadbalancer，但标的是 optional=true
+          （见 spring-cloud-gateway-server-4.1.2.pom），optional 依赖不会传递给使用者。
+          不加这个依赖时，网关无法解析 lb:// 服务名，所有经过网关的请求都会返回
+          503 Service Unavailable（"error":"Service Unavailable"），
+          定位时容易误以为是 Nacos 没注册或 token 有问题。
+          官方文档同样要求使用 lb:// 时自行引入该 starter。
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <!-- Nacos 配置中心 -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+        </dependency>
+        <!-- 公共库（仅复用 JwtUtil + Result，不引入其 servlet-web 依赖） -->
+        <dependency>
+            <groupId>com.shopai</groupId>
+            <artifactId>shopai-common</artifactId>
+        </dependency>
+        <!-- Redis（校验 Token 黑名单，WebFlux 下用 reactive redis） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+        <!-- JWT（jjwt，JwtUtil 依赖） -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+        </dependency>
+        <!-- Jackson（Result 序列化） -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- Sentinel -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+        </dependency>
+        <!-- 测试 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- 网关可独立打包为可执行 jar -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

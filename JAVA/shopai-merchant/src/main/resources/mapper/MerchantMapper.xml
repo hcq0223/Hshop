@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  商户 Mapper XML（shopai-merchant 服务）
+  微服务拆分说明：从原单体 com.example.demo.mapper.MerchantMapper.xml 迁移，
+  namespace 变更为 com.shopai.merchant.mapper.MerchantMapper。
+  原顾客端 LIKE 搜索 selectMerchantSearchPage 已迁至 shopai-search（ES），此处不再保留。
+
+  【跨库 JOIN 去除说明】（本次改造）
+  原 selectPublicInfoById 通过 {@code INNER JOIN users u ... AND u.status = 1}、
+  selectDetailByUserId 通过 {@code INNER JOIN users u} 在「共享单库」阶段直接取用户信息。
+  按「独立库」处理后 users 表归属 shopai-user 服务，本 XML **不再出现 users 表**，
+  改为本服务在拿到商户数据后用 Feign 调用户服务补齐（见 MerchantServiceImpl）。
+-->
+<mapper namespace="com.shopai.merchant.mapper.MerchantMapper">
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        id, user_id, shop_name, logo_url, business_license,
+        contact_name, contact_phone, shop_description, banners, rating, is_verified,
+        total_revenue, available_balance, frozen_balance
+    </sql>
+
+    <sql id="Base_Column_List_two">
+       shop_name, logo_url, business_license,
+        contact_name, contact_phone, shop_description, rating
+    </sql>
+
+    <!-- 简单结果映射（用于直接返回 Merchant） -->
+    <resultMap id="BaseResultMap" type="com.shopai.merchant.entity.Merchant">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="shop_name" property="shopName"/>
+        <result column="logo_url" property="logoUrl"/>
+        <result column="business_license" property="businessLicense"/>
+        <result column="contact_name" property="contactName"/>
+        <result column="contact_phone" property="contactPhone"/>
+        <result column="shop_description" property="shopDescription"/>
+        <result column="banners" property="banners"/>
+        <result column="rating" property="rating"/>
+        <result column="is_verified" property="isVerified"/>
+        <result column="total_revenue" property="totalRevenue"/>
+        <result column="available_balance" property="availableBalance"/>
+        <result column="frozen_balance" property="frozenBalance"/>
+    </resultMap>
+
+    <!-- 带 User 的详细映射 -->
+    <resultMap id="MerchantWithUserMap" type="com.shopai.merchant.entity.Merchant" extends="BaseResultMap">
+        <!-- 微服务拆分说明：原 javaType=com.example.demo.entity.User 改为 UserRef（users 表归属用户服务） -->
+        <association property="user" javaType="com.shopai.merchant.entity.UserRef">
+            <id column="u_id" property="id"/>
+            <result column="u_username" property="username"/>
+            <result column="u_phone" property="phone"/>
+            <result column="u_email" property="email"/>
+            <result column="u_role" property="role"/>
+            <result column="u_status" property="status"/>
+            <result column="u_created_at" property="createTime"/>
+            <result column="u_updated_at" property="updateTime"/>
+        </association>
+        <association property="realName" javaType="com.shopai.merchant.entity.MerchantRealName">
+            <id column="rn_id" property="id"/>
+            <result column="rn_merchant_id" property="merchantId"/>
+            <result column="rn_real_name" property="realName"/>
+            <result column="rn_card_id" property="cardId"/>
+            <result column="rn_card_url" property="cardUrl"/>
+            <result column="rn_created_at" property="createdAt"/>
+        </association>
+    </resultMap>
+
+    <!--
+      1. 分页查询商户列表
+      微服务拆分说明：原 SQL 为
+        SELECT m.*, COUNT(p.id) AS product_count FROM merchants m LEFT JOIN products p ...
+      用跨库 JOIN products 统计每个商户的商品数。
+      按「独立库」处理后 products 表归属 shopai-product 服务，本 SQL 不再联查，
+      改为仅查 merchants（商品数如需展示请调用商品服务的内部计数接口）。
+    -->
+    <select id="selectMerchantPage" resultMap="BaseResultMap">
+        SELECT m.*
+        FROM merchants m
+        <where>
+            <if test="keyword != null and keyword != ''">
+                AND m.shop_name LIKE CONCAT('%', #{keyword}, '%')
+            </if>
+        </where>
+        ORDER BY m.rating DESC, m.id DESC
+    </select>
+
+    <!-- 客户端商户公开信息：返回展示字段（含轮播图、联系方式） -->
+    <!--
+      微服务拆分说明：原 SQL 用 INNER JOIN users u ... AND u.status = 1 过滤「账号正常」。
+      独立库后 users 表归属用户服务，本 SQL 只查 merchants；账号正常性由 Service 层
+      通过 Feign 调用户服务校验（见 MerchantServiceImpl.getMerchantPublicInfo）。
+
+      ⚠️ m.user_id 必须查出来：Service 层要拿它去 Feign 校验账号状态
+      （isUserActive(merchant.getUserId())）。漏查会让 userId 为 null，
+      校验直接判为「账号不可用」→ 店铺公开信息被静默隐藏，前端表现为点进店铺空白。
+    -->
+    <select id="selectPublicInfoById" resultMap="MerchantPublicMap">
+        SELECT
+        m.id, m.user_id, m.shop_name, m.logo_url, m.shop_description,
+        m.rating, m.is_verified, m.contact_name, m.contact_phone,
+        m.business_license, m.banners
+        FROM merchants m
+        WHERE m.id = #{merchantId}
+        LIMIT 1
+    </select>
+
+    <!-- 对应结果映射（公开字段） -->
+    <resultMap id="MerchantPublicMap" type="com.shopai.merchant.entity.Merchant">
+        <id column="id" property="id"/>
+        <!-- user_id 用于 Service 层校验账号状态，不对外展示，但映射必须保留 -->
+        <result column="user_id" property="userId"/>
+        <result column="shop_name" property="shopName"/>
+        <result column="logo_url" property="logoUrl"/>
+        <result column="shop_description" property="shopDescription"/>
+        <result column="rating" property="rating"/>
+        <result column="is_verified" property="isVerified"/>
+        <result column="contact_name" property="contactName"/>
+        <result column="contact_phone" property="contactPhone"/>
+        <result column="business_license" property="businessLicense"/>
+        <result column="banners" property="banners"/>
+    </resultMap>
+
+    <!-- 2. 根据 userId 查询商户（单表） -->
+    <select id="selectByUserId" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM merchants
+        WHERE user_id = #{userId}
+        LIMIT 1
+    </select>
+
+    <!-- 3. 根据 userId 查询商户 + 实名认证信息（用户信息由 Service 层 Feign 补齐） -->
+    <!--
+      微服务拆分说明：原 SQL 用 INNER JOIN users u 取账号信息并映射到 Merchant.user。
+      独立库后 users 表归属用户服务，本 SQL 只联查本服务的 merchant_real_name，
+      账号信息由 MerchantServiceImpl 通过 Feign 调用户服务内部接口补齐。
+    -->
+    <select id="selectDetailByUserId" resultMap="MerchantWithUserMap">
+        SELECT
+        m.id, m.user_id, m.shop_name, m.logo_url, m.business_license,
+        m.contact_name, m.contact_phone, m.shop_description, m.banners, m.rating, m.is_verified,
+        rn.id AS rn_id,
+        rn.merchant_id AS rn_merchant_id,
+        rn.real_name AS rn_real_name,
+        rn.card_id AS rn_card_id,
+        rn.card_url AS rn_card_url,
+        rn.created_at AS rn_created_at
+        FROM merchants m
+        LEFT JOIN merchant_real_name rn ON m.id = rn.merchant_id
+        WHERE m.user_id = #{userId}
+        LIMIT 1
+    </select>
+
+    <!-- 4. 已认证且评分 >= 某值，降序排列 -->
+    <select id="selectVerifiedWithMinRating" resultType="com.shopai.merchant.entity.Merchant">
+        SELECT <include refid="Base_Column_List"/>
+        FROM merchants
+        WHERE is_verified = 1
+        AND rating >= #{minRating}
+        ORDER BY rating DESC
+    </select>
+
+    <!--
+      5. 原子按增量变更资金（替代「selectById + updateById」读改写）
+
+      要点：
+      1) SET x = COALESCE(x,0) + COALESCE(#{delta},0)
+         - COALESCE(x,0)：历史数据资金字段可能为 NULL，NULL + n = NULL 会把余额写成 NULL；
+         - COALESCE(#{delta},0)：增量为 null 表示「本次不变动该字段」，加 0 即不变，
+           从而一条 SQL 支持只改部分字段，省掉 Java 侧的三段 if。
+      2) 单条 UPDATE 把「读+算+写」压进一次行锁持有，锁窗口远小于读改写，
+         显著降低其它事务（如支付）等锁超时的概率。
+      3) 不做「余额不足」之类的业务校验 —— 该校验属于调用方职责（如提现前先查余额），
+         放进来会让语义变复杂，也会让这条热路径变慢。
+         —— 例外：frozen_balance 增加「不得为负」护栏（见 WHERE 条件）。
+            frozen_balance 是「进行中退款」的预留计数，恒等于该商家所有 refunding
+            订单 pay_amount 之和，不存在合法负值；一旦为负，说明资金幂等键算错了
+            （真实事故：同一订单经历两轮退款，两轮共用幂等键 freeze:orderId，
+            第二轮 freeze 被唯一索引静默吞掉，而 refund_approve 照扣，
+            冻结余额被扣成 -10.00）。命中该护栏时本次 UPDATE 影响 0 行，
+            消息保持 pending 由重试任务反复告警，把「悄悄扣坏数据」
+            变成「看得见的失败」。
+            total_revenue / available_balance 不加此护栏：提现后再发生退款时，
+            二者出现负值是业务上合理的「欠款」表达。
+    -->
+    <update id="changeFundsAtomic">
+        UPDATE merchants
+        SET total_revenue     = COALESCE(total_revenue, 0)     + COALESCE(#{revenueDelta}, 0),
+            available_balance = COALESCE(available_balance, 0) + COALESCE(#{availableDelta}, 0),
+            frozen_balance    = COALESCE(frozen_balance, 0)    + COALESCE(#{frozenDelta}, 0)
+        WHERE id = #{merchantId}
+          AND (#{frozenDelta} IS NULL
+               OR #{frozenDelta} &gt;= 0
+               OR COALESCE(frozen_balance, 0) + #{frozenDelta} &gt;= 0)
+    </update>
+
+</mapper>

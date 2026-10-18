@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  订单明细 Mapper XML（shopai-order 服务）
+  微服务拆分说明：从原单体 src/main/resources/mapper/OrderItemMapper.xml 迁移，
+  namespace 由 com.example.demo.mapper.OrderItemMapper 变更为 com.shopai.order.mapper.OrderItemMapper。
+-->
+<mapper namespace="com.shopai.order.mapper.OrderItemMapper">
+
+    <!-- 订单明细表字段 -->
+    <sql id="Base_Column_List">
+        id, order_id, product_id, sku_id,
+        product_name, sku_attrs, price, quantity, image_url
+    </sql>
+
+    <!-- 按订单ID查询明细 -->
+    <select id="selectByOrderId" resultType="com.shopai.order.entity.OrderItem">
+        SELECT <include refid="Base_Column_List"/>
+        FROM order_items
+        WHERE order_id = #{orderId}
+        ORDER BY id ASC
+    </select>
+
+    <!-- 按订单ID集合批量查询明细（组装 order 索引视图时统计件数与商品名摘要） -->
+    <select id="selectByOrderIds" resultType="com.shopai.order.entity.OrderItem">
+        SELECT <include refid="Base_Column_List"/>
+        FROM order_items
+        WHERE order_id IN
+        <foreach collection="orderIds" item="oid" open="(" separator="," close=")">
+            #{oid}
+        </foreach>
+        ORDER BY id ASC
+    </select>
+
+    <!-- 批量插入 -->
+    <insert id="insertBatch" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO order_items
+        (order_id, product_id, sku_id, product_name, sku_attrs, price, quantity, image_url)
+        VALUES
+        <foreach collection="items" item="item" separator=",">
+            (
+            #{item.orderId}, #{item.productId}, #{item.skuId},
+            #{item.productName}, #{item.skuAttrs}, #{item.price},
+            #{item.quantity}, #{item.imageUrl}
+            )
+        </foreach>
+    </insert>
+
+</mapper>

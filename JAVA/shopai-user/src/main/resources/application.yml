@@ -1,0 +1,88 @@
+# ======================================================================
+# shopai-user 用户/认证服务配置
+# 职责：登录/注册/客户资料/管理员用户管理/仪表盘
+# 端口：8081（网关 8080 路由 /api/auth/**、/api/customer/**、/api/admin/users|customers|dashboard 至此）
+# 说明：微服务拆分后，本服务不再各自验签 JWT（网关统一认证），仅登录签发仍用 JwtUtil。
+# ======================================================================
+
+server:
+  port: 8081
+
+spring:
+  application:
+    name: shopai-user
+
+  # ---------- Nacos 配置中心（按需启用；本地无 Nacos 时注释掉 cloud.nacos 与 config.import） ----------
+  cloud:
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+  config:
+    import:
+      - optional:nacos:shopai-user.yml
+
+  # ---------- 数据源（共享单库 hcq_shop，与单体一致） ----------
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/hcq_shop?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username:
+    password:
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      connection-timeout: 30000
+
+  # ---------- Redis ----------
+  data:
+    redis:
+      cluster:
+        nodes:
+
+        max-redirects: 3
+      timeout: 5000
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+# ---------- Feign（与服务调用相关） ----------
+feign:
+  httpclient:
+    enable: true
+    max-connections: 200 # 最大连接数
+    max-connections-per-route: 50 # 单个路径最大连接数
+  sentinel:
+    enabled: true # 开启sentinel支持
+
+# ---------- MyBatis-Plus ----------
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.shopai.user.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    default-type-handler: com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler
+
+# ---------- JWT（仅登录签发 Token 用，网关负责验签） ----------
+jwt:
+  secret: 0223Hhcq@0323Hhcq+2857uai7367367@+ v
+  expiration: 86400000
+  header: Authorization
+  token-prefix: "Bearer "
+
+# ---------- 上传路径（静态资源 /uploads/** 由网关或资源服务托管，这里仅保证启动不报错） ----------
+upload:
+  path: D:\ShopAi\VorI\Images
+
+logging:
+  level:
+    com.shopai.user: debug

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shopai.seckill.mapper.SeckillOrderMapper">
+
+    <sql id="Base_Column_List">
+        id, activity_id, stock_id, record_id, user_id, customer_id, sku_id, product_id, merchant_id,
+        quantity, seckill_price, total_amount, order_id, order_no, address_id, status,
+        deleted, created_at, updated_at
+    </sql>
+
+    <select id="selectByRecordId" resultType="com.shopai.seckill.entity.SeckillOrder">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_order
+        WHERE record_id = #{recordId}
+          AND deleted = 0
+        LIMIT 1
+    </select>
+
+</mapper>

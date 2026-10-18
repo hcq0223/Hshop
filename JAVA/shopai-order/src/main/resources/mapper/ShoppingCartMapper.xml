@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  购物车 Mapper XML（shopai-order 服务）
+  微服务拆分说明：从原单体 src/main/resources/mapper/ShoppingCartMapper.xml 迁移，
+  namespace 由 com.example.demo.mapper.ShoppingCartMapper 变更为 com.shopai.order.mapper.ShoppingCartMapper。
+
+  【跨库 JOIN 去除说明】（本次改造）
+  原 selectByCustomerId 通过
+    INNER JOIN product_skus sku ON sc.sku_id = sku.id
+    INNER JOIN products     p   ON sku.product_id = p.id
+  在「共享单库」阶段直接取 SKU 规格与商品名称/图片。
+  按「独立库」处理后 product_skus / products 归属 shopai-product 服务，
+  本 XML **只访问 shopping_cart**（订单服务自己的表）；
+  SKU 与商品信息改由 ShoppingCartServiceImpl 通过 ProductInternalClient（Feign）
+  调商品服务内部接口批量补齐，填充到 ShoppingCart.sku / ShoppingCart.product。
+-->
+<mapper namespace="com.shopai.order.mapper.ShoppingCartMapper">
+
+    <!-- 购物车表字段 -->
+    <sql id="Base_Column_List">
+        sc.id, sc.customer_id, sc.sku_id, sc.quantity, sc.selected, sc.created_at
+    </sql>
+
+    <!--
+      购物车列表（仅本服务表）
+      说明：sku / product 关联对象不再由 SQL JOIN 填充，改由 Service 层 Feign 补齐，
+      故此处使用购物车自身的结果映射。
+    -->
+    <resultMap id="ShoppingCartMap" type="com.shopai.order.entity.ShoppingCart">
+        <id column="id" property="id"/>
+        <result column="customer_id" property="customerId"/>
+        <result column="sku_id" property="skuId"/>
+        <result column="quantity" property="quantity"/>
+        <result column="selected" property="selected"/>
+        <result column="created_at" property="createTime"/>
+    </resultMap>
+
+    <!-- 1. 查客户购物车（SKU/商品信息由 Service 层 Feign 补齐） -->
+    <select id="selectByCustomerId" resultMap="ShoppingCartMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM shopping_cart sc
+        WHERE sc.customer_id = #{customerId}
+        ORDER BY sc.created_at DESC
+    </select>
+
+    <!-- 2. 查客户与SKU对应的唯一记录 -->
+    <select id="selectByCustomerIdAndSkuId" resultType="com.shopai.order.entity.ShoppingCart">
+        SELECT <include refid="Base_Column_List"/>
+        FROM shopping_cart sc
+        WHERE customer_id = #{customerId} AND sku_id = #{skuId}
+        LIMIT 1
+    </select>
+
+    <!-- 3. 若已存在则累加数量，否则插入 -->
+    <insert id="insertOrAddQuantity">
+        INSERT INTO shopping_cart (customer_id, sku_id, quantity, selected)
+        VALUES (#{customerId}, #{skuId}, #{quantity}, 1)
+        ON DUPLICATE KEY UPDATE quantity = quantity + #{quantity}
+    </insert>
+
+    <!-- 4. 更新数量 -->
+    <update id="updateQuantity">
+        UPDATE shopping_cart SET quantity = #{quantity}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 5. 更新单个选中状态 -->
+    <update id="updateSelected">
+        UPDATE shopping_cart SET selected = #{selected}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 6. 批量更新选中状态 -->
+    <update id="updateSelectedBatch">
+        UPDATE shopping_cart SET selected = #{selected}
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </update>
+
+    <!-- 7. 根据客户和SKU删除 -->
+    <delete id="deleteByCustomerIdAndSkuId">
+        DELETE FROM shopping_cart
+        WHERE customer_id = #{customerId} AND sku_id = #{skuId}
+    </delete>
+
+    <!-- 8. 批量删除 -->
+    <delete id="deleteByIds">
+        DELETE FROM shopping_cart
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </delete>
+
+    <!-- 9. 清空购物车 -->
+    <delete id="deleteByCustomerId">
+        DELETE FROM shopping_cart WHERE customer_id = #{customerId}
+    </delete>
+
+</mapper>

@@ -1,0 +1,169 @@
+# ======================================================================
+# shopai-gateway 网关配置
+# 职责：统一入口 8080，JWT 统一认证 + 路由转发到各业务服务 + 跨域
+# 说明：微服务拆分后，前端 dev 代理仍指向 8080，前端无需改代理目标。
+# ======================================================================
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: shopai-gateway
+  main:
+    # 网关是 WebFlux 应用，禁用 servlet 模式
+    web-application-type: reactive
+
+  # ---------- Redis（Token 黑名单校验，WebFlux 用 reactive redis） ----------
+  data: # ← 加一层 data
+    redis:
+      cluster:
+        nodes:
+#          - redis ip:端口
+
+        max-redirects: 3
+      timeout: 5000
+
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+    gateway:
+      # 路由规则（按设计文档第 6 节路由表）
+      # 本地开发：先走 serviceId 直连（需 Nacos 注册中心）；
+      # 若无 Nacos，可将 uri 改为 http://localhost:端口 直连调试。
+      routes:
+        # ==================================================================
+        # 【内部接口拦截】必须放在业务路由之前（Spring Cloud Gateway 按顺序匹配，
+        # 第一条命中的路由生效）。
+        # 微服务拆分说明：服务间内部接口（/api/xxx/internal/**）仅供 Feign 直连，
+        # 不得对外暴露。这里用「无有效后端」的 uri 拦截，命中即 503，
+        # 避免被下面的 /api/merchant/**、/api/product/**、/api/order/**、/api/customer/**
+        # 等通配路由转发出去。
+        # ==================================================================
+        - id: block-internal-user
+          uri: no://op
+          predicates:
+            - Path=/api/user/internal/**
+        - id: block-internal-customer
+          uri: no://op
+          predicates:
+            - Path=/api/customer/internal/**
+        - id: block-internal-merchant
+          uri: no://op
+          predicates:
+            - Path=/api/merchant/internal/**
+        - id: block-internal-product
+          uri: no://op
+          predicates:
+            - Path=/api/product/internal/**
+        - id: block-internal-order
+          uri: no://op
+          predicates:
+            - Path=/api/order/internal/**
+        # 列表查询改造新增：搜索服务的内部列表查询接口（各业务服务的列表由其承载），
+        # 必须拦截，否则会被下面的 /api/search/** 路由暴露出去。
+        - id: block-internal-search
+          uri: no://op
+          predicates:
+            - Path=/api/search/internal/**
+        # 秒杀服务的内部接口（订单服务回调落账用），必须拦截，
+        # 否则会被下面的 /api/seckill/** 通配路由暴露出去 ——
+        # 那等于任何人都能伪造「订单已创建」来把抢购记录改成成功。
+        - id: block-internal-seckill
+          uri: no://op
+          predicates:
+            - Path=/api/seckill/internal/**
+
+        # ---- 用户/认证服务 shopai-user (8081) ----
+        - id: shopai-user-auth
+          uri: lb://shopai-user
+          predicates:
+            - Path=/api/auth/**
+        - id: shopai-user-customer
+          uri: lb://shopai-user
+          predicates:
+            - Path=/api/customer/**
+        - id: shopai-user-admin-user
+          uri: lb://shopai-user
+          predicates:
+            - Path=/api/admin/users/**,/api/admin/customers/**,/api/admin/dashboard,/api/admin/dashboard/**
+        - id: shopai-user-common
+          uri: lb://shopai-user
+          predicates:
+            - Path=/api/common/**
+
+        # ---- 静态资源 /uploads/**（由 shopai-user 的 WebMvcConfig 映射本地图片目录） ----
+        - id: shopai-user-uploads
+          uri: lb://shopai-user
+          predicates:
+            - Path=/uploads/**
+
+        # ---- 商家/评价服务 shopai-merchant (8084) ----
+        - id: shopai-merchant
+          uri: lb://shopai-merchant
+          predicates:
+            - Path=/api/admin/merchants/**,/api/merchant/**,/api/review/**
+
+        # ---- 商品服务 shopai-product (8082) ----
+        - id: shopai-product
+          uri: lb://shopai-product
+          predicates:
+            - Path=/api/product/**,/api/category/**,/api/sku/**
+
+        # ---- 订单服务 shopai-order (8083) ----
+        - id: shopai-order
+          uri: lb://shopai-order
+          predicates:
+            - Path=/api/order/**,/api/cart/**,/api/address/**
+
+        # ---- 搜索服务 shopai-search (8085) ----
+        - id: shopai-search
+          uri: lb://shopai-search
+          predicates:
+            - Path=/api/search/**
+
+        # ---- 秒杀服务 shopai-seckill (8087) ----
+        # /api/seckill/list、/api/seckill/detail/{id} 为公开（游客可浏览活动）；
+        # /api/seckill/buy、/result/**、/my 需登录（JwtAuthGlobalFilter 注入 X-User-Id）；
+        # /api/seckill/merchant/** 与 /api/seckill/admin/** 由网关做角色校验
+        # （见 JwtAuthGlobalFilter 的 MERCHANT_SELF_PATHS / ADMIN_PATH_PREFIX 判断）。
+        # 注意：/api/seckill/internal/** 已在上面被 block 规则拦截，不会走到这里。
+        - id: shopai-seckill
+          uri: lb://shopai-seckill
+          predicates:
+            - Path=/api/seckill/**
+
+        # ---- 库存服务：网关不对外暴露，仅服务间 Feign 直连 ----
+        # /api/inventory/** 不配置路由 => 网关默认 404，外部不可达
+
+      # 全局 CORS（网关层统一处理，替代各服务的 WebMvcConfig 跨域）
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: true
+            maxAge: 3600
+  config:
+    import:
+      - optional:nacos:shopai-gateway.yml
+
+# ---------- JWT 配置（与单体保持一致，网关用于验签） ----------
+jwt:
+  secret: 0223Hhcq@0323Hhcq+2857uai7367367@+ v
+  expiration: 86400000
+  header: Authorization
+  token-prefix: "Bearer "
+
+logging:
+  level:
+    com.shopai.gateway: debug
+    org.springframework.cloud.gateway: info

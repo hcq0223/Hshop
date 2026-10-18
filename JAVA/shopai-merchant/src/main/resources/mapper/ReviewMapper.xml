@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  评价 Mapper XML（shopai-merchant 服务）
+  微服务拆分说明：从原单体 com.example.demo.mapper.ReviewMapper.xml 迁移，
+  namespace 变更为 com.shopai.merchant.mapper.ReviewMapper。
+
+  【跨库 JOIN 去除说明】（本次改造）
+  原 selectWithCustomerByProductId / selectPageWithDetails / selectByIdWithDetails 通过
+    LEFT JOIN customers c ON r.customer_id  = c.id
+    LEFT JOIN products  p ON r.product_id   = p.id
+    LEFT JOIN merchants m ON r.merchant_id  = m.id
+  在「共享单库」阶段直接取评价人昵称/头像、商品名、商家名。
+  按「独立库」处理后 customers 归属 shopai-user、products 归属 shopai-product，
+  merchants 虽属本服务但已由本服务后续统一补齐（保持实现一致），故本 XML：
+    - 只访问 reviews 表；
+    - customer 由 ReviewServiceImpl 通过 Feign 调用户服务客户内部接口补齐；
+    - productName 由 ReviewServiceImpl 通过 Feign 调商品服务内部接口补齐；
+    - merchantName 由 ReviewServiceImpl 通过本服务 MerchantMapper 补齐。
+-->
+<mapper namespace="com.shopai.merchant.mapper.ReviewMapper">
+
+    <!-- 评价表字段 -->
+    <sql id="Base_Column_List">
+        r.id, r.order_id, r.customer_id, r.product_id, r.merchant_id,
+        r.rating, r.content, r.images, r.created_at
+    </sql>
+
+    <!-- 简单结果映射（处理 images JSON；customer/productName/merchantName 由 Service 层补齐） -->
+    <resultMap id="ReviewSimpleMap" type="com.shopai.merchant.entity.Review">
+        <id column="id" property="id"/>
+        <result column="order_id" property="orderId"/>
+        <result column="customer_id" property="customerId"/>
+        <result column="product_id" property="productId"/>
+        <result column="merchant_id" property="merchantId"/>
+        <result column="rating" property="rating"/>
+        <result column="content" property="content"/>
+        <result column="images" property="images"
+                typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result column="created_at" property="createTime"/>
+    </resultMap>
+
+    <!-- 1. 按商品ID分页查评价（客户信息由 Service 层 Feign 补齐） -->
+    <select id="selectWithCustomerByProductId" resultMap="ReviewSimpleMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM reviews r
+        WHERE r.product_id = #{productId}
+        ORDER BY r.created_at DESC
+        LIMIT #{offset}, #{size}
+    </select>
+
+    <!-- 2. 按商品ID统计评价总数 -->
+    <select id="countByProductId" resultType="long">
+        SELECT COUNT(1) FROM reviews WHERE product_id = #{productId}
+    </select>
+
+    <!-- 3. 按商品ID统计各星级数量 -->
+    <select id="countRatingByProductId" resultType="java.util.HashMap">
+        SELECT r.rating, COUNT(1) AS cnt
+        FROM reviews r
+        WHERE r.product_id = #{productId}
+        GROUP BY r.rating
+    </select>
+
+    <!-- 4. 按客户ID查评价 -->
+    <select id="selectByCustomerId" resultMap="ReviewSimpleMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM reviews r
+        WHERE r.customer_id = #{customerId}
+        ORDER BY r.created_at DESC
+    </select>
+
+    <!-- 5. 按订单ID查评价 -->
+    <select id="selectByOrderId" resultMap="ReviewSimpleMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM reviews r
+        WHERE r.order_id = #{orderId}
+        LIMIT 1
+    </select>
+
+    <!-- 6. 判断订单是否已评价 -->
+    <select id="existsByOrderId" resultType="int">
+        SELECT COUNT(1)
+        FROM reviews
+        WHERE order_id = #{orderId}
+    </select>
+
+    <!-- 7. 查询某商家所有评价的 rating（用于计算均分） -->
+    <select id="selectRatingsByMerchantId" resultType="int">
+        SELECT r.rating FROM reviews r WHERE r.merchant_id = #{merchantId}
+    </select>
+
+    <!-- 8. 管理员分页查所有评价（客户/商品/商家信息由 Service 层跨服务补齐） -->
+    <select id="selectPageWithDetails" resultMap="ReviewSimpleMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM reviews r
+        ORDER BY r.created_at DESC
+        LIMIT #{offset}, #{size}
+    </select>
+
+    <!-- 9. 统计评价总数 -->
+    <select id="countAll" resultType="long">
+        SELECT COUNT(1) FROM reviews
+    </select>
+
+    <!-- 10. 管理员按评论ID搜索（客户/商品/商家信息由 Service 层跨服务补齐） -->
+    <select id="selectByIdWithDetails" resultMap="ReviewSimpleMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM reviews r
+        WHERE r.id = #{id}
+    </select>
+
+</mapper>

@@ -1,0 +1,13 @@
+# Python 缓存和虚拟环境
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# 敏感配置
+.env
+
+# IDE
+.idea/
+.vscode/

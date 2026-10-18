@@ -1,0 +1,96 @@
+# ======================================================================
+# shopai-inventory 库存服务配置
+# 职责：库存查询/扣减/回补/秒杀/预热；独立 inventory 表；Seata AT 分支事务。
+# 端口：8086（不对网关对外暴露，仅服务间 Feign 直连，见设计文档第 6 节）
+# 说明：本服务不各自验签 JWT（网关统一认证），身份从 X-User-* 头读取。
+# ======================================================================
+
+server:
+  port: 8086
+
+spring:
+  application:
+    name: shopai-inventory
+
+  # ---------- Nacos 配置中心（按需启用；本地无 Nacos 时注释掉 cloud.nacos 与 config.import） ----------
+  cloud:
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+  config:
+    import:
+      - optional:nacos:shopai-inventory.yml
+
+  # ---------- 数据源（共享单库 hcq_shop，与单体一致；inventory 表独立建表） ----------
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/hcq_shop?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username:
+    password:
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      connection-timeout: 30000
+
+  # ---------- Redis（秒杀库存预热/扣减） ----------
+  data: # ← 加一层 data
+    redis:
+      cluster:
+        nodes:
+
+        max-redirects: 3
+      timeout: 5000
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+# ---------- MyBatis-Plus ----------
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.shopai.inventory.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# ---------- Seata（AT 分布式事务，事务分组与 TC 地址；本地无 Seata Server 时可注释掉） ----------
+seata:
+  enabled: true
+  application-id: ${spring.application.name}
+  tx-service-group: default_tx_group
+  enable-auto-data-source-proxy: true
+  config:
+    type: nacos
+    nacos:
+      server-addr: 127.0.0.1:8848
+      namespace: ""
+      group: SEATA_GROUP
+      username: nacos
+      password: nacos
+      data-id: seataServer.properties
+  registry:
+    type: nacos
+    nacos:
+      application: seata-server
+      server-addr: 127.0.0.1:8848
+      namespace: ""
+      group: SEATA_GROUP
+      username: nacos
+      password: nacos
+
+# ---------- 上传路径（本服务不托管静态资源，仅保证启动不报错） ----------
+upload:
+  path: D:\ShopAi\VorI\Images
+
+logging:
+  level:
+    com.shopai.inventory: debug

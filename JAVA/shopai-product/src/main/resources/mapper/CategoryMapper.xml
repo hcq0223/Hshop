@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  分类 Mapper XML
+  微服务拆分说明：从原单体 src/main/resources/mapper/CategoryMapper.xml 迁移至 shopai-product 服务，
+  namespace 由 com.example.demo.mapper.CategoryMapper 变更为 com.shopai.product.mapper.CategoryMapper。
+-->
+<mapper namespace="com.shopai.product.mapper.CategoryMapper">
+
+    <!-- 分类表字段 -->
+    <sql id="Base_Column_List">
+        id, parent_id, name, sort_order
+    </sql>
+
+    <!-- 1. 查询顶级分类 -->
+    <select id="selectTopLevel" resultType="com.shopai.product.entity.Category">
+        SELECT <include refid="Base_Column_List"/>
+        FROM categories
+        WHERE parent_id = 0
+        ORDER BY sort_order ASC, id ASC
+    </select>
+
+    <!-- 2. 根据父ID查询子分类 -->
+    <select id="selectByParentId" resultType="com.shopai.product.entity.Category">
+        SELECT <include refid="Base_Column_List"/>
+        FROM categories
+        WHERE parent_id = #{parentId}
+        ORDER BY sort_order ASC, id ASC
+    </select>
+
+    <!-- 3. 按主键查询 -->
+    <select id="selectByIde" resultType="com.shopai.product.entity.Category">
+        SELECT <include refid="Base_Column_List"/>
+        FROM categories
+        WHERE id = #{id}
+    </select>
+
+    <!-- 4. 查询所有分类，按层级排序（方便在应用层组装树） -->
+    <select id="selectAllSorted" resultType="com.shopai.product.entity.Category">
+        SELECT <include refid="Base_Column_List"/>
+        FROM categories
+        ORDER BY parent_id ASC, sort_order ASC, id ASC
+    </select>
+
+</mapper>

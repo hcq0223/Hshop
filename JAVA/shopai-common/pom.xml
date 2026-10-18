@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ======================================================================
+     shopai-common 公共库模块
+     说明：
+       - 承载被多个微服务复用的公共代码（统一响应、异常、JWT、Redis 封装等）。
+       - 本模块为普通 jar，不打可执行包（无 main 方法、不继承 boot 插件打包）。
+       - 依赖采用 <optional>true</optional> 声明：
+         使本模块自身可编译，同时不把这些依赖强制传递给下游模块，
+         由各服务按需显式引入，避免网关(WebFlux)被 servlet-web 污染。
+     ====================================================================== -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.shopai</groupId>
+        <artifactId>shopai-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shopai-common</artifactId>
+    <packaging>jar</packaging>
+    <name>shopai-common</name>
+    <description>公共库：统一响应、全局异常、JWT工具、Redis封装、通用DTO/配置</description>
+
+    <dependencies>
+        <!-- Web（提供 @RestControllerAdvice / WebMvcConfigurer / ResponseBodyAdvice 等）
+             optional：网关(WebFlux)依赖本模块时需自行排除或显式选择 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- Security（提供 AuthenticationException / AccessDeniedException / PasswordEncoder） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- Redis（RedisService 依赖 StringRedisTemplate） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- RabbitMQ（RabbitTemplate 发布事件） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+        <!-- Sentinel -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+        </dependency>
+        <!-- MyBatis-Plus（MyBatisPlusConfig 分页插件、UserDto 注解） -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- Jackson（ObjectMapper / JavaTimeModule 序列化） -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- JJWT（JwtUtil 生成/解析 Token） -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- Feign（FeignFallbackReason 解析失败原因） -->
+        <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-starter-openfeign</artifactId>
+                <optional>true</optional>
+        </dependency>
+        <!-- Hutool 工具类 -->
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- Lombok（编译期） -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

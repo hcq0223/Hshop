@@ -1,0 +1,90 @@
+# ======================================================================
+# shopai-search 搜索服务配置
+# 职责：商品/商家搜索（Elasticsearch）、MQ 消费增量同步、全量重建索引
+# 端口：8085（网关 8080 路由 /api/search/** 至此）
+# 说明：微服务拆分后，本服务不再各自验签 JWT（网关统一认证），
+#       身份从 X-User-* 头读取（CurrentUser 工具类）；搜索接口均为公开。
+# 独立库改造：本服务不再连接数据库。索引源数据（products / merchants 及
+#       关联的店铺名、分类名、创建时间）一律通过 Feign 调用商品 / 商家服务的
+#       内部接口拉取（见 SearchSyncService），因此下面不再配置 datasource
+#       与 mybatis-plus。
+# ======================================================================
+
+server:
+  port: 8085
+
+spring:
+  application:
+    name: shopai-search
+
+  # ---------- Nacos 配置中心（按需启用；本地无 Nacos 时注释掉 cloud.nacos 与 config.import） ----------
+  cloud:
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+  config:
+    import:
+      - optional:nacos:shopai-search.yml
+
+  # ---------- Redis ----------
+  data:
+    redis:
+      cluster:
+        nodes:
+
+        max-redirects: 3
+      timeout: 5000
+
+  # ---------- RabbitMQ（消费商品/商家变更事件 → 同步 ES） ----------
+  rabbitmq:
+    addresses: 127.0.0.1:5672,127.0.0.1:5673,127.0.0.1:5674
+    username: guest
+    password: guest
+    virtual-host: /
+    # 消费者：自动 ack（见 SearchEventConsumer）。失败 basicNack(requeue=false)，
+    # 消息不重回队列（避免死循环）；如需「失败重试 3 次进死信队列」，请在队列上
+    # 配置 x-dead-letter-exchange 死信交换机（见设计文档第 10 节）。
+    listener:
+      simple:
+        prefetch: 10
+        acknowledge-mode: auto
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 1000
+          multiplier: 2
+          max-attempts: 3
+
+  # ---------- Elasticsearch ----------
+  elasticsearch:
+    uris: http://127.0.0.1:9200
+    connection-timeout: 3s
+    socket-timeout: 5s
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+# ---------- Feign（调商品 / 商家服务内部接口拉取索引源数据） ----------
+feign:
+  httpclient:
+    enable: true
+    max-connections: 200 # 最大连接数
+    max-connections-per-route: 50 # 单个路径最大连接数
+  sentinel:
+    enabled: true # 开启sentinel支持
+
+# ---------- 上传路径（静态资源由网关/资源服务托管，这里仅保证启动不报错） ----------
+upload:
+  path: D:\ShopAi\VorI\Images
+
+logging:
+  level:
+    com.shopai.search: debug

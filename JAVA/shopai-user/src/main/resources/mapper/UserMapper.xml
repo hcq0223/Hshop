@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  用户 Mapper XML
+  微服务拆分说明：从原单体 src/main/resources/mapper/UserMapper.xml 迁移至 shopai-user 服务，
+  namespace 由 com.example.demo.mapper.UserMapper 变更为 com.shopai.user.mapper.UserMapper。
+
+  【跨库 JOIN 去除说明】（本次改造）
+  原 selectByConditions / countByConditions 通过
+    LEFT JOIN customers c ON u.id = c.user_id
+    LEFT JOIN merchants m ON u.id = m.user_id
+  在「共享单库」阶段按客户昵称 / 店铺名模糊匹配 users。
+  按「独立库」处理后 customers / merchants 表分别归属 shopai-user 与 shopai-merchant 服务，
+  二者均可访问但**不允许跨服务 JOIN**，故改为「先由各服务查出匹配的 userId 集合，
+  再在 users 表本地做 IN 过滤」：
+    - customers.nickname 匹配 → CustomerService 内查（CustomerMapper.selectByNickname）
+      → UserService 传入 customerUserIds
+    - merchants.shop_name 匹配 → Feign 调商家服务内部接口 → UserService 传入 merchantUserIds
+  本 XML 不再出现任何非 users 表。
+-->
+<mapper namespace="com.shopai.user.mapper.UserMapper">
+
+    <!-- 基础字段列表，避免 SELECT * 的不确定性，同时利用驼峰映射 -->
+    <sql id="Base_Column_List">
+        id, username, password_hash, phone, email, role, status,
+        created_at, updated_at
+    </sql>
+
+    <!-- 按用户名查询，加 LIMIT 1 防止异常 -->
+    <select id="selectByUsername" resultType="com.shopai.user.entity.User">
+        SELECT <include refid="Base_Column_List"/>
+        FROM users
+        WHERE username = #{username}
+        LIMIT 1
+    </select>
+
+    <!-- 按手机号查询 -->
+    <select id="selectByPhone" resultType="com.shopai.user.entity.User">
+        SELECT <include refid="Base_Column_List"/>
+        FROM users
+        WHERE phone = #{phone}
+        LIMIT 1
+    </select>
+
+    <!-- 按邮箱查询 -->
+    <select id="selectByEmail" resultType="com.shopai.user.entity.User">
+        SELECT <include refid="Base_Column_List"/>
+        FROM users
+        WHERE email = #{email}
+        LIMIT 1
+    </select>
+
+    <!--
+      关键字与条件过滤片段（仅涉及 users 表本地列 + 外部传入的 userId 集合）。
+      语义说明：
+      - keyword 为空 → 不做关键字过滤；
+      - keyword 非空 → 匹配 username/phone/email，或命中 customerUserIds / merchantUserIds
+        （这两个集合分别来自客户服务的昵称匹配与商家服务的店铺名匹配）。
+    -->
+    <sql id="Condition_Filter">
+        <where>
+            <if test="role != null and role != ''">
+                AND role = #{role}
+            </if>
+            <if test="status != null">
+                AND status = #{status}
+            </if>
+            <if test="keyword != null and keyword != ''">
+                AND (
+                username LIKE CONCAT('%', #{keyword}, '%')
+                OR phone LIKE CONCAT('%', #{keyword}, '%')
+                OR email LIKE CONCAT('%', #{keyword}, '%')
+                <if test="customerUserIds != null and customerUserIds.size() > 0">
+                    OR id IN
+                    <foreach collection="customerUserIds" item="uid" open="(" separator="," close=")">
+                        #{uid}
+                    </foreach>
+                </if>
+                <if test="merchantUserIds != null and merchantUserIds.size() > 0">
+                    OR id IN
+                    <foreach collection="merchantUserIds" item="uid" open="(" separator="," close=")">
+                        #{uid}
+                    </foreach>
+                </if>
+                )
+            </if>
+        </where>
+    </sql>
+
+    <!-- 组合条件分页查询（关键字跨服务匹配后，只在 users 表本地过滤） -->
+    <select id="selectByConditions" resultType="com.shopai.user.entity.User">
+        SELECT <include refid="Base_Column_List"/>
+        FROM users
+        <include refid="Condition_Filter"/>
+        ORDER BY id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <!-- 计数查询（与主查询保持一致的条件） -->
+    <select id="countByConditions" resultType="long">
+        SELECT COUNT(*)
+        FROM users
+        <include refid="Condition_Filter"/>
+    </select>
+
+
+    <!-- 按角色统计用户数 -->
+    <select id="countByRole" resultType="long">
+        SELECT COUNT(*)
+        FROM users
+        WHERE role = #{role}
+    </select>
+
+    <!-- 统计今日新增用户数（created_at 是 datetime 类型，需用 DATE() 比较日期部分） -->
+    <select id="countTodayNew" resultType="long">
+        SELECT COUNT(*)
+        FROM users
+        WHERE DATE(created_at) = CURDATE()
+    </select>
+
+    <!-- 近N天每日新增用户数（排除管理员） -->
+    <select id="dailyNewUsers" resultType="map">
+        SELECT DATE(created_at) AS date, COUNT(*) AS count
+        FROM users
+        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+          AND role != 'admin'
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+    </select>
+
+    <!-- 按角色统计用户分布 -->
+    <select id="countGroupByRole" resultType="map">
+        SELECT role, COUNT(*) AS count
+        FROM users
+        GROUP BY role
+    </select>
+
+    <!-- 更新用户状态 -->
+    <update id="updateStatus">
+            UPDATE users
+            SET status = #{status}
+            WHERE id = #{id}
+    </update>
+
+    <!-- 分页查询用户（供全量重建 user 索引使用，按 id 升序保证分批不重不漏） -->
+    <select id="selectPageForIndex" resultType="com.shopai.user.entity.User">
+        SELECT <include refid="Base_Column_List"/>
+        FROM users
+        ORDER BY id ASC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <!-- 登录校验，必须匹配密码，且状态正常 -->
+    <select id="selectForLogin" resultType="com.shopai.user.entity.User">
+        SELECT <include refid="Base_Column_List"/>
+        FROM users
+        WHERE username = #{username}
+        AND password_hash = #{passwordHash}
+        AND status = 1
+        LIMIT 1
+    </select>
+
+</mapper>

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shopai.order.mapper.MerchantFundsMessageMapper">
+
+    <!--
+      捞待重试消息。
+      status 只取 'pending'：'done' 已完成不再处理，'failed' 已耗尽次数、
+      需要人工介入，都不该被定时任务反复捞出来空转。
+      retry_count &lt; max_retry 再兜一层，避免 max_retry 被改小后仍有旧数据被捞。
+    -->
+    <select id="selectNeedRetry" resultType="com.shopai.order.entity.MerchantFundsMessage">
+        SELECT id, merchant_id, biz_key, revenue_delta, available_delta, frozen_delta,
+               reason, status, retry_count, max_retry, next_retry_at, error_msg,
+               created_at, updated_at
+        FROM merchant_funds_message
+        WHERE status = 'pending'
+          AND retry_count &lt; max_retry
+          AND next_retry_at &lt;= #{now}
+        ORDER BY next_retry_at ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="markRetry">
+        UPDATE merchant_funds_message
+        SET retry_count   = retry_count + 1,
+            next_retry_at = #{nextRetryAt},
+            error_msg     = #{errorMsg}
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      标记完成。
+      WHERE status IN ('pending','failed') 是幂等保护：
+      重复标记不会改写已完成的行，避免把 done 覆盖成别的状态。
+      另外若重试次数已耗尽但恰好这次成功了，也允许从 failed 转 done。
+    -->
+    <update id="markDone">
+        UPDATE merchant_funds_message
+        SET status    = 'done',
+            error_msg = NULL
+        WHERE id = #{id}
+          AND status IN ('pending', 'failed')
+    </update>
+
+    <update id="markFailed">
+        UPDATE merchant_funds_message
+        SET status    = 'failed',
+            error_msg = #{errorMsg}
+        WHERE id = #{id}
+          AND status = 'pending'
+    </update>
+
+</mapper>

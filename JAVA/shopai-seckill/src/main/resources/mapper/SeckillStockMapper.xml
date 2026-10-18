@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shopai.seckill.mapper.SeckillStockMapper">
+
+    <sql id="Base_Column_List">
+        id, activity_id, sku_id, product_id, merchant_id, seckill_price, origin_price,
+        total_stock, available_stock, locked_stock, sold_stock, version, per_user_limit, sort,
+        preheated, preheat_time, deleted, created_at, updated_at
+    </sql>
+
+    <!--
+      ============ 原子扣减可抢库存（防超卖，DB 兜底） ============
+
+      WHERE available_stock >= #{qty} 是这条 SQL 的全部要点：
+      并发事务靠 InnoDB 行锁串行执行，后到者看到的是前一个已扣减后的值，
+      不足则匹配不到行、返回 0，从而不会扣成负数。
+
+      与 Redis Lua 的分工：
+        - Redis Lua：挡住 99%+ 的并发，几乎不落库；
+        - 这条 SQL：Redis 丢数据/未预热降级时走它，保证最终不会超卖。
+      两者都做「余量判断」，任一道失效另一道仍能兜住。
+    -->
+    <update id="deductAvailable">
+        UPDATE seckill_stock
+        SET available_stock = available_stock - #{qty},
+            locked_stock    = locked_stock + #{qty},
+            updated_at      = NOW()
+        WHERE id = #{stockId}
+          AND deleted = 0
+          AND available_stock &gt;= #{qty}
+    </update>
+
+    <!--
+      回补可抢库存。
+      available_stock + #{qty} &lt;= total_stock 是防「补多了」的上限保护：
+      当消息重投与超时回补任务并发触发时，只会有一次生效。
+      同时从 locked_stock 里扣掉（若之前计入过锁定），用 GREATEST(...,0) 兜底不出现负数。
+    -->
+    <update id="restoreAvailable">
+        UPDATE seckill_stock
+        SET available_stock = available_stock + #{qty},
+            locked_stock    = GREATEST(locked_stock - #{qty}, 0),
+            updated_at      = NOW()
+        WHERE id = #{stockId}
+          AND deleted = 0
+          AND available_stock + #{qty} &lt;= total_stock
+    </update>
+
+    <!-- 成单成功：锁定库存转为已售库存 -->
+    <update id="confirmSold">
+        UPDATE seckill_stock
+        SET locked_stock = GREATEST(locked_stock - #{qty}, 0),
+            sold_stock   = sold_stock + #{qty},
+            updated_at   = NOW()
+        WHERE id = #{stockId}
+          AND deleted = 0
+    </update>
+
+    <!--
+      成单失败回滚：把锁定库存退回可抢库存。
+      只从 locked_stock 里减，不动 sold_stock（没成单就不该算卖出）。
+    -->
+    <update id="rollbackLocked">
+        UPDATE seckill_stock
+        SET locked_stock    = GREATEST(locked_stock - #{qty}, 0),
+            available_stock = LEAST(available_stock + #{qty}, total_stock),
+            updated_at      = NOW()
+        WHERE id = #{stockId}
+          AND deleted = 0
+    </update>
+
+    <update id="markPreheated">
+        UPDATE seckill_stock
+        SET preheated    = #{preheated},
+            preheat_time = NOW(),
+            updated_at   = NOW()
+        WHERE id = #{stockId}
+          AND deleted = 0
+    </update>
+
+    <select id="selectByActivityId" resultType="com.shopai.seckill.entity.SeckillStock">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_stock
+        WHERE activity_id = #{activityId}
+          AND deleted = 0
+        ORDER BY sort ASC, id ASC
+    </select>
+
+    <select id="selectNotPreheated" resultType="com.shopai.seckill.entity.SeckillStock">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_stock
+        WHERE activity_id = #{activityId}
+          AND deleted = 0
+          AND preheated = 0
+    </select>
+
+    <!--
+      批量按 SKU 查参与中的秒杀额度（商品详情页「秒杀中」标签）。
+      JOIN 活动表过滤状态与时间窗 —— 这两个条件只有活动表有，
+      不过滤的话已结束活动的历史秒杀价会被当成当前价展示出来。
+      只取 pending / running 且 end_time 未过期的活动。
+    -->
+    <select id="selectBySkuIds" resultType="com.shopai.seckill.entity.SeckillStock">
+        SELECT
+        s.id, s.activity_id, s.sku_id, s.product_id, s.merchant_id, s.seckill_price, s.origin_price,
+        s.total_stock, s.available_stock, s.locked_stock, s.sold_stock, s.version,
+        s.per_user_limit, s.sort, s.preheated, s.preheat_time, s.deleted, s.created_at, s.updated_at
+        FROM seckill_stock s
+        INNER JOIN seckill_activity a ON a.id = s.activity_id AND a.deleted = 0
+        WHERE s.deleted = 0
+          AND a.status IN ('pending', 'running')
+          AND a.end_time &gt; NOW()
+          AND s.sku_id IN
+          <foreach collection="skuIds" item="skuId" open="(" separator="," close=")">
+              #{skuId}
+          </foreach>
+        ORDER BY s.sort ASC, s.id ASC
+    </select>
+
+</mapper>

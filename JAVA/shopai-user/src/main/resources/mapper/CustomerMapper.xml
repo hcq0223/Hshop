@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  客户 Mapper XML
+  微服务拆分说明：从原单体 src/main/resources/mapper/CustomerMapper.xml 迁移至 shopai-user 服务，
+  namespace 由 com.example.demo.mapper.CustomerMapper 变更为 com.shopai.user.mapper.CustomerMapper。
+-->
+<mapper namespace="com.shopai.user.mapper.CustomerMapper">
+
+    <!-- 基础字段列表（不包含关联的 user 对象） -->
+    <sql id="Base_Column_List">
+        id, user_id, nickname, avatar_url, gender, default_address_id
+    </sql>
+
+    <!-- 结果映射：带 User 关联（用于联查时填充 Customer.user 属性） -->
+    <resultMap id="CustomerWithUserMap" type="com.shopai.user.entity.Customer">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="nickname" property="nickname"/>
+        <result column="avatar_url" property="avatarUrl"/>
+        <result column="gender" property="gender"/>
+        <result column="default_address_id" property="defaultAddressId"/>
+        <!-- association 关联 User 对象，注意 users 表有逻辑删除字段 deleted -->
+        <association property="user" javaType="com.shopai.user.entity.User">
+            <id column="u_id" property="id"/>
+            <result column="u_username" property="username"/>
+            <result column="u_phone" property="phone"/>
+            <result column="u_email" property="email"/>
+            <result column="u_role" property="role"/>
+            <result column="u_status" property="status"/>
+            <result column="u_created_at" property="createTime"/>
+            <result column="u_updated_at" property="updateTime"/>
+        </association>
+    </resultMap>
+
+    <!-- 根据 userId 查询客户id -->
+    <select id="selectIdByUserId" resultType="java.lang.Long">
+            SELECT id
+            FROM customers
+            WHERE user_id = #{userId}
+    </select>
+
+    <!--
+      按 userId 集合批量查询客户（组装 user 索引视图时补「客户昵称」检索字段）
+      微服务拆分说明：原 SQL 里 users LEFT JOIN customers 取昵称，独立库后不能跨库 JOIN，
+      改为本服务本地按 userId 批量查询，再在 Java 侧建映射。
+    -->
+    <select id="selectByUserIds" resultType="com.shopai.user.entity.Customer">
+        SELECT <include refid="Base_Column_List"/>
+        FROM customers
+        WHERE user_id IN
+        <foreach collection="userIds" item="uid" open="(" separator="," close=")">
+            #{uid}
+        </foreach>
+    </select>
+    <!-- 1. 单表查询，按 userId -->
+    <select id="selectByUserId" resultType="com.shopai.user.entity.Customer">
+        SELECT <include refid="Base_Column_List"/>
+        FROM customers
+        WHERE user_id = #{userId}
+        LIMIT 1
+    </select>
+
+    <!-- 2. 联查客户 + 用户信息（自定义结果映射） -->
+    <select id="selectDetailByUserId" resultMap="CustomerWithUserMap">
+        SELECT
+        c.id, c.user_id, c.nickname, c.avatar_url, c.gender, c.default_address_id,
+        u.id AS u_id,
+        u.username AS u_username,
+        u.phone AS u_phone,
+        u.email AS u_email,
+        u.role AS u_role,
+        u.status AS u_status,
+        u.created_at AS u_created_at,
+        u.updated_at AS u_updated_at
+        FROM customers c
+        INNER JOIN users u ON c.user_id = u.id
+        WHERE c.user_id = #{userId}
+        LIMIT 1
+    </select>
+
+    <!-- 3. 按昵称模糊查询客户列表（若需联查用户信息，可复用相同 resultMap） -->
+    <select id="selectByNickname" resultType="com.shopai.user.entity.Customer">
+        SELECT <include refid="Base_Column_List"/>
+        FROM customers
+        WHERE nickname LIKE CONCAT('%', #{nickname}, '%')
+        ORDER BY id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+    <select id="countByNickname" resultType="java.lang.Long">
+            SELECT COUNT(*)
+            FROM customers
+            WHERE nickname LIKE CONCAT('%', #{nickname}, '%')
+    </select>
+
+</mapper>

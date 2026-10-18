@@ -1,0 +1,99 @@
+version: '3.8'
+services:
+  redis-7001:
+    image: redis:latest
+    container_name: redis-7001
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "7001:6379"
+      - "17001:16379"
+    volumes:
+      - D:/ShopAi/ShopRedis/7001/conf/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-7001-data:/data
+    networks:
+      my-net:
+        ipv4_address: 172.28.0.11
+
+  redis-7002:
+    image: redis:latest
+    container_name: redis-7002
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "7002:6379"
+      - "17002:16379"
+    volumes:
+      - D:/ShopAi/ShopRedis/7002/conf/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-7002-data:/data
+    networks:
+      my-net:
+        ipv4_address: 172.28.0.12
+
+  redis-7003:
+    image: redis:latest
+    container_name: redis-7003
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "7003:6379"
+      - "17003:16379"
+    volumes:
+      - D:/ShopAi/ShopRedis/7003/conf/redis.conf:/usr/local/etc/redis/redis.conf      
+      - redis-7003-data:/data
+    networks:
+      my-net:
+        ipv4_address: 172.28.0.13
+
+  redis-7004:
+    image: redis:latest
+    container_name: redis-7004
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "7004:6379"
+      - "17004:16379"
+    volumes:
+      - D:/ShopAi/ShopRedis/7004/conf/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-7004-data:/data
+    networks:
+      my-net:
+        ipv4_address: 172.28.0.14
+
+  redis-7005:
+    image: redis:latest
+    container_name: redis-7005
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "7005:6379"
+      - "17005:16379"
+    volumes:
+      - D:/ShopAi/ShopRedis/7005/conf/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-7005-data:/data
+    networks:
+      my-net:
+        ipv4_address: 172.28.0.15
+
+  redis-7006:
+    image: redis:latest
+    container_name: redis-7006
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "7006:6379"
+      - "17006:16379"
+    volumes:
+      - D:/ShopAi/ShopRedis/7006/conf/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-7006-data:/data
+    networks:
+      my-net:
+        ipv4_address: 172.28.0.16
+
+volumes:
+  redis-7001-data:
+  redis-7002-data:
+  redis-7003-data:
+  redis-7004-data:
+  redis-7005-data:
+  redis-7006-data:
+
+networks:
+  my-net:
+    external: true
+    name: shopai
+    

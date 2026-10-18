@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  商品 Mapper XML
+  微服务拆分说明：从原单体 src/main/resources/mapper/ProductMapper.xml 迁移至 shopai-product 服务，
+  namespace 由 com.example.demo.mapper.ProductMapper 变更为 com.shopai.product.mapper.ProductMapper。
+
+  【跨库 JOIN 去除说明】（本次改造）
+  原 selectDetailById / selectHotOnSale 通过
+    INNER JOIN merchants m ON p.merchant_id = m.id
+    LEFT  JOIN merchants m ON p.merchant_id = m.id
+  在「共享单库」阶段直接取店铺名/Logo。按「独立库」处理后 merchants 表归属 shopai-merchant 服务，
+  本服务不再允许跨库联查，改为：
+    - 本 XML 只访问 products / categories / product_skus（均为商品服务自己的表）；
+    - 店铺名 / Logo 由 ProductServiceImpl 通过 MerchantInternalClient（Feign）
+      调商家服务内部接口批量补齐后填充到 Product 的 shopName / shopLogo / merchant 字段。
+  本 XML 中不再出现 merchants 表。
+-->
+<mapper namespace="com.shopai.product.mapper.ProductMapper">
+
+    <!-- 商品表字段 -->
+    <sql id="Base_Column_List">
+        p.id, p.merchant_id, p.category_id, p.name, p.description,
+        p.main_image, p.images, p.price_min, p.price_max,
+        p.sales_count, p.status, p.created_at
+    </sql>
+
+    <!-- 带分类的 resultMap（店铺字段已改由 Service 层 Feign 补齐，故无 merchant 关联） -->
+    <resultMap id="ProductDetailMap" type="com.shopai.product.entity.Product">
+        <id column="id" property="id"/>
+        <result column="merchant_id" property="merchantId"/>
+        <result column="category_id" property="categoryId"/>
+        <result column="name" property="name"/>
+        <result column="description" property="description"/>
+        <result column="main_image" property="mainImage"/>
+        <result column="images" property="images"
+                typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result column="price_min" property="priceMin"/>
+        <result column="price_max" property="priceMax"/>
+        <result column="sales_count" property="salesCount"/>
+        <result column="status" property="status"/>
+        <result column="created_at" property="createTime"/>
+
+        <!-- 关联分类 -->
+        <association property="category" javaType="com.shopai.product.entity.Category">
+            <id column="c_id" property="id"/>
+            <result column="c_name" property="name"/>
+            <result column="c_parent_id" property="parentId"/>
+            <result column="c_sort_order" property="sortOrder"/>
+        </association>
+
+        <!-- 关联 SKU 列表（库存已迁 shopai-inventory，此处不再映射 stock） -->
+        <collection property="skuList" ofType="com.shopai.product.entity.ProductSku">
+            <id column="sku_id" property="id"/>
+            <result column="sku_product_id" property="productId"/>
+            <result column="sku_code" property="skuCode"/>
+            <result column="sku_color" property="color"/>
+            <result column="sku_size" property="size"/>
+            <result column="sku_price" property="price"/>
+            <result column="sku_image_url" property="imageUrl"/>
+            <result column="sku_weight" property="weight"/>
+        </collection>
+    </resultMap>
+
+    <!-- ==================== 列表查询 ==================== -->
+
+    <select id="selectByMerchantId" resultType="com.shopai.product.entity.Product">
+        SELECT p.id, p.merchant_id, p.category_id, p.name, p.description,
+               p.main_image, p.price_min, p.price_max,
+               p.sales_count, p.status, p.created_at
+        FROM products p
+        WHERE p.merchant_id = #{merchantId}
+        ORDER BY p.created_at DESC
+    </select>
+
+    <!--
+      热销在售商品（按销量降序取前N条）
+      注意：不再 JOIN merchants，店铺名/Logo 由 Service 层 Feign 补齐。
+    -->
+    <select id="selectHotOnSale" resultType="com.shopai.product.entity.Product">
+        SELECT p.id, p.merchant_id, p.category_id, p.name, p.description,
+               p.main_image, p.price_min, p.price_max,
+               p.sales_count, p.status, p.created_at
+        FROM products p
+        WHERE p.status = 'on_sale'
+        ORDER BY p.sales_count DESC, p.created_at DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- ==================== 详情联查（仅本服务表） ==================== -->
+    <select id="selectDetailById" resultMap="ProductDetailMap">
+        SELECT
+        p.id, p.merchant_id, p.category_id, p.name, p.description,
+        p.main_image, p.images, p.price_min, p.price_max,
+        p.sales_count, p.status, p.created_at,
+        c.id AS c_id, c.name AS c_name, c.parent_id AS c_parent_id,
+        c.sort_order AS c_sort_order,
+        sku.id AS sku_id, sku.product_id AS sku_product_id,
+        sku.sku_code AS sku_code, sku.color AS sku_color, sku.size AS sku_size,
+        sku.price AS sku_price, sku.image_url AS sku_image_url, sku.weight AS sku_weight
+        FROM products p
+        INNER JOIN categories c ON p.category_id = c.id
+        LEFT JOIN product_skus sku ON p.id = sku.product_id
+        WHERE p.id = #{id}
+    </select>
+
+    <!-- ==================== 搜索索引源数据（仅本服务表） ==================== -->
+    <!--
+      全量查询商品（含分类名/父分类名），供搜索服务全量重建 product 索引。
+      店铺名/Logo 由 Service 层 Feign 调商家服务补齐（原为 JOIN merchants）。
+    -->
+    <select id="selectAllForIndex" resultMap="ProductDetailMap">
+        SELECT
+        p.id, p.merchant_id, p.category_id, p.name, p.description,
+        p.main_image, p.images, p.price_min, p.price_max,
+        p.sales_count, p.status, p.created_at,
+        c.id AS c_id, c.name AS c_name, c.parent_id AS c_parent_id,
+        c.sort_order AS c_sort_order
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.id
+        ORDER BY p.id
+    </select>
+
+    <!-- 按ID批量查询商品（含分类名/父分类名），供搜索服务 MQ 增量同步 -->
+    <select id="selectByIdsForIndex" resultMap="ProductDetailMap">
+        SELECT
+        p.id, p.merchant_id, p.category_id, p.name, p.description,
+        p.main_image, p.images, p.price_min, p.price_max,
+        p.sales_count, p.status, p.created_at,
+        c.id AS c_id, c.name AS c_name, c.parent_id AS c_parent_id,
+        c.sort_order AS c_sort_order
+        FROM products p
+        LEFT JOIN categories c ON p.category_id = c.id
+        WHERE p.id IN
+        <foreach collection="ids" item="pid" open="(" separator="," close=")">
+            #{pid}
+        </foreach>
+        ORDER BY p.id
+    </select>
+
+    <!-- ==================== 聚合计数（供用户服务仪表盘） ==================== -->
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM products
+    </select>
+
+    <!--
+      按分类ID查询商品ID（分类改名后同步索引用）
+      只回 ID：调用方先拿数量判断是否值得扇出重建，超过阈值则跳过并提示走全量重建。
+    -->
+    <select id="selectIdsByCategoryId" resultType="java.lang.Long">
+        SELECT id FROM products
+        WHERE category_id = #{categoryId}
+        ORDER BY id
+        LIMIT #{limit}
+    </select>
+
+    <!-- 下单时累加销量（供订单服务通过内部 Feign 接口调用） -->
+    <update id="incrementSalesCount">
+        UPDATE products SET sales_count = sales_count + #{delta} WHERE id = #{productId}
+    </update>
+
+</mapper>

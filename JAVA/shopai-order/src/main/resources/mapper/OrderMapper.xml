@@ -1,0 +1,326 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  订单 Mapper XML（shopai-order 服务）
+  微服务拆分说明：从原单体 src/main/resources/mapper/OrderMapper.xml 迁移，
+  namespace 由 com.example.demo.mapper.OrderMapper 变更为 com.shopai.order.mapper.OrderMapper。
+
+  【跨库 JOIN 去除说明】（本次改造）
+  原所有订单查询通过
+    LEFT JOIN merchants m   ON o.merchant_id = m.id
+    LEFT JOIN products  p   ON oi.product_id = p.id
+    LEFT JOIN merchants oi_m ON p.merchant_id = oi_m.id
+    LEFT JOIN customers c   ON o.customer_id = c.id
+  在「共享单库」阶段直接取店铺名/Logo、商品销量、客户昵称头像。
+  按「独立库」处理后 merchants 归属 shopai-merchant、products 归属 shopai-product、
+  customers 归属 shopai-user，本服务不再允许跨库联查，改为：
+    - 本 XML **只访问 orders / order_items**（订单服务自己的表）；
+    - 店铺名/Logo 由 OrderEnrichService 通过 MerchantInternalClient（Feign）
+      调商家服务内部接口批量补齐，填充到 Order.merchant 与 OrderItem.merchant；
+    - 商品名/图片本就已在下单时冗余写入 order_items（product_name / image_url），
+      无需再联查 products；商品销量展示改由商品服务内部接口提供（非订单核心字段）。
+  本 XML 中不再出现 merchants / products / customers / product_skus 等外部表。
+-->
+<mapper namespace="com.shopai.order.mapper.OrderMapper">
+
+    <!-- 订单表字段 -->
+    <sql id="Base_Column_List">
+        o.id, o.order_no, o.customer_id, o.merchant_id,
+        o.total_amount, o.pay_amount, o.freight_amount, o.status,
+        o.tracking_number, o.tracking_company,
+        o.refund_amount, o.refund_reason, o.refund_type,
+        o.return_tracking_number, o.return_tracking_company,
+        o.refund_requested_at, o.refund_resolved_at, o.pre_refund_status,
+        o.refund_seq,
+        o.settled, o.auto_received, o.auto_completed,
+        o.is_reviewed,
+        o.receiver_snapshot, o.payment_method, o.paid_at, o.shipped_at,
+        o.completed_at, o.created_at
+    </sql>
+
+    <!-- 订单项字段（columnPrefix oi_） -->
+    <sql id="OrderItem_Column_List">
+        oi.id AS oi_id,
+        oi.order_id AS oi_order_id,
+        oi.product_id AS oi_product_id,
+        oi.sku_id AS oi_sku_id,
+        oi.product_name AS oi_product_name,
+        oi.sku_attrs AS oi_sku_attrs,
+        oi.price AS oi_price,
+        oi.quantity AS oi_quantity,
+        oi.image_url AS oi_image_url
+    </sql>
+
+    <!--
+      订单详情 resultMap
+      说明：merchant / customer 关联对象不再由 SQL JOIN 填充，改由 Service 层 Feign 补齐，
+      故此处不声明 merchant / customer 的 association（保持字段存在但为空，由 Feign 填充）。
+    -->
+    <resultMap id="OrderDetailMap" type="com.shopai.order.entity.Order">
+        <id column="id" property="id"/>
+        <result column="order_no" property="orderNo"/>
+        <result column="customer_id" property="customerId"/>
+        <result column="merchant_id" property="merchantId"/>
+        <result column="total_amount" property="totalAmount"/>
+        <result column="pay_amount" property="payAmount"/>
+        <result column="freight_amount" property="freightAmount"/>
+        <result column="status" property="status"/>
+        <result column="tracking_number" property="trackingNumber"/>
+        <result column="tracking_company" property="trackingCompany"/>
+        <result column="refund_amount" property="refundAmount"/>
+        <result column="refund_reason" property="refundReason"/>
+        <result column="refund_type" property="refundType"/>
+        <result column="return_tracking_number" property="returnTrackingNumber"/>
+        <result column="return_tracking_company" property="returnTrackingCompany"/>
+        <result column="refund_requested_at" property="refundRequestedAt"/>
+        <result column="refund_resolved_at" property="refundResolvedAt"/>
+        <result column="pre_refund_status" property="preRefundStatus"/>
+        <!-- 退款轮次：商家资金幂等键的一部分，别漏映射，否则读出来的实体轮次恒为 null -->
+        <result column="refund_seq" property="refundSeq"/>
+        <result column="settled" property="settled"/>
+        <result column="auto_received" property="autoReceived"/>
+        <result column="auto_completed" property="autoCompleted"/>
+        <result column="is_reviewed" property="isReviewed"/>
+        <result column="receiver_snapshot" property="receiverSnapshot"
+                typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result column="payment_method" property="paymentMethod"/>
+        <result column="paid_at" property="paidAt"/>
+        <result column="shipped_at" property="shippedAt"/>
+        <result column="completed_at" property="completedAt"/>
+        <result column="created_at" property="createTime"/>
+
+        <!-- 订单项集合：字段完全匹配 order_items 表 -->
+        <collection property="orderItems" ofType="com.shopai.order.entity.OrderItem"
+                    columnPrefix="oi_">
+            <id column="id" property="id"/>
+            <result column="order_id" property="orderId"/>
+            <result column="product_id" property="productId"/>
+            <result column="sku_id" property="skuId"/>
+            <result column="product_name" property="productName"/>
+            <result column="sku_attrs" property="skuAttrs"/>
+            <result column="price" property="price"/>
+            <result column="quantity" property="quantity"/>
+            <result column="image_url" property="imageUrl"/>
+        </collection>
+    </resultMap>
+
+    <!-- 简单结果映射（含订单项，用于列表页展示件数） -->
+    <resultMap id="OrderSimpleMap" type="com.shopai.order.entity.Order">
+        <id column="id" property="id"/>
+        <result column="order_no" property="orderNo"/>
+        <result column="customer_id" property="customerId"/>
+        <result column="merchant_id" property="merchantId"/>
+        <result column="total_amount" property="totalAmount"/>
+        <result column="pay_amount" property="payAmount"/>
+        <result column="freight_amount" property="freightAmount"/>
+        <result column="status" property="status"/>
+        <result column="is_reviewed" property="isReviewed"/>
+        <result column="receiver_snapshot" property="receiverSnapshot"
+                typeHandler="com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler"/>
+        <result column="payment_method" property="paymentMethod"/>
+        <result column="paid_at" property="paidAt"/>
+        <result column="shipped_at" property="shippedAt"/>
+        <result column="completed_at" property="completedAt"/>
+        <result column="created_at" property="createTime"/>
+
+        <!-- 订单项集合：用于列表页展示真实件数与商品信息 -->
+        <collection property="orderItems" ofType="com.shopai.order.entity.OrderItem"
+                    columnPrefix="oi_">
+            <id column="id" property="id"/>
+            <result column="order_id" property="orderId"/>
+            <result column="product_id" property="productId"/>
+            <result column="sku_id" property="skuId"/>
+            <result column="product_name" property="productName"/>
+            <result column="sku_attrs" property="skuAttrs"/>
+            <result column="price" property="price"/>
+            <result column="quantity" property="quantity"/>
+            <result column="image_url" property="imageUrl"/>
+        </collection>
+    </resultMap>
+
+    <!-- ========== 列表查询（仅 orders + order_items） ========== -->
+    <select id="selectByCustomerId" resultMap="OrderSimpleMap">
+        SELECT <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.customer_id = #{customerId}
+          AND o.status NOT IN ('completed', 'cancelled')
+        ORDER BY o.created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="selectByMerchantId" resultMap="OrderSimpleMap">
+        SELECT <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.merchant_id = #{merchantId}
+          AND o.status NOT IN ('completed', 'cancelled')
+        ORDER BY o.created_at DESC
+    </select>
+
+    <select id="selectByOrderNo" resultMap="OrderSimpleMap">
+        SELECT <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.order_no = #{orderNo}
+        LIMIT 1
+    </select>
+
+    <select id="selectByStatus" resultMap="OrderSimpleMap">
+        SELECT <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.status = #{status}
+        <if test="customerId != null">
+            AND o.customer_id = #{customerId}
+        </if>
+        <if test="merchantId != null">
+            AND o.merchant_id = #{merchantId}
+        </if>
+        ORDER BY o.created_at DESC
+    </select>
+
+    <!-- 管理员查询全平台订单（不按客户/商户过滤） -->
+    <select id="selectAllOrders" resultMap="OrderSimpleMap">
+        SELECT <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.status NOT IN ('completed', 'cancelled')
+        ORDER BY o.created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- ========== 详情联查（仅 orders + order_items） ========== -->
+    <select id="selectDetailById" resultMap="OrderDetailMap">
+        SELECT
+        <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.id = #{id}
+    </select>
+
+    <!-- ========== 仪表盘聚合（仅 orders 表，供用户服务跨服务调用） ========== -->
+
+    <!-- 近N天每日订单汇总（净营收：排除已取消订单） -->
+    <select id="dailyOrderStats" resultType="map">
+        SELECT DATE(created_at) AS date,
+               COUNT(*) AS count,
+               COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 0 ELSE pay_amount END), 0) AS amount
+        FROM orders
+        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+        GROUP BY DATE(created_at)
+        ORDER BY date ASC
+    </select>
+
+    <!-- 按状态统计订单数 -->
+    <select id="countGroupByStatus" resultType="map">
+        SELECT status, COUNT(*) AS count
+        FROM orders
+        GROUP BY status
+    </select>
+
+    <!-- 统计订单总数 -->
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM orders
+    </select>
+
+    <!--
+      商户销售额排名
+      说明：不再 JOIN merchants 取店铺名（merchants 归属商家服务），
+      只返回 merchantId + 销售额，店铺名由调用方（用户服务）再 Feign 补齐。
+      orderBy 由调用方传入 desc（Top）/ asc（Bottom），用 ${} 拼接（取值受 Service 层白名单约束）。
+    -->
+    <select id="merchantSalesRanking" resultType="map">
+        SELECT o.merchant_id AS merchantId,
+               COALESCE(SUM(o.pay_amount), 0) AS totalSales
+        FROM orders o
+        WHERE o.status NOT IN ('pending_pay', 'cancelled')
+        GROUP BY o.merchant_id
+        ORDER BY totalSales ${orderBy}
+        LIMIT #{limit}
+    </select>
+
+    <!-- ========== 跨服务内部接口用查询（商家服务 Feign 调用） ========== -->
+
+    <!-- 统计某商家在时间区间内的指定状态订单数（商家服务周营收归档用） -->
+    <select id="countCompletedOrders" resultType="int">
+        SELECT COUNT(1)
+        FROM orders
+        WHERE merchant_id = #{merchantId}
+          AND status IN
+          <foreach collection="statuses" item="s" open="(" separator="," close=")">
+              #{s}
+          </foreach>
+          AND created_at &gt;= #{start}
+          AND created_at &lt;= #{end}
+    </select>
+
+    <!-- 查询订单是否已评价（供商家服务评价落库二次校验：0=未评价，1=已评价） -->
+    <select id="selectIsReviewed" resultType="java.lang.Integer">
+        SELECT is_reviewed FROM orders WHERE id = #{orderId}
+    </select>
+
+    <!-- 标记订单已评价（供商家服务评价落库时调用） -->
+    <update id="markReviewed">
+        UPDATE orders SET is_reviewed = 1 WHERE id = #{orderId}
+    </update>
+
+    <!--
+      条件式状态流转（CAS）：把「状态判断」下推到 WHERE，由行锁保证原子性。
+
+      并发场景举例（支付）：原实现「读 → 判 pending_pay → 写 paid」，
+      两个并发支付请求会同时通过判断，导致：
+        - 商户营收被累加两次（多给商户钱）
+        - 同一订单被写两次
+        - 两条事务争同一把行锁，互相等待
+      加了 AND status = #{expectStatus} 之后，只有第一个事务能匹配到行（rows=1），
+      第二个事务 rows=0，调用方据此跳过全部副作用。
+
+      paid_at 仅在支付流转时传值，其它流转传 null：
+      用 <if> 控制是否出现在 SET 中，避免把已支付的 paid_at 用 NULL 覆盖掉。
+    -->
+    <update id="casUpdateStatus">
+        UPDATE orders
+        SET status = #{newStatus}
+        <if test="paidAt != null">
+            , paid_at = #{paidAt}
+        </if>
+        WHERE id = #{orderId}
+          AND status = #{expectStatus}
+    </update>
+
+    <!-- ========== 历史订单（已完成/已取消），按角色过滤 ========== -->
+    <select id="selectHistoryOrders" resultMap="OrderSimpleMap">
+        SELECT <include refid="Base_Column_List"/>,
+        <include refid="OrderItem_Column_List"/>
+        FROM orders o
+        LEFT JOIN order_items oi ON o.id = oi.order_id
+        WHERE o.status IN
+        <foreach collection="statusList" item="s" open="(" separator="," close=")">#{s}</foreach>
+        <if test="customerId != null">
+            AND o.customer_id = #{customerId}
+        </if>
+        <if test="merchantId != null">
+            AND o.merchant_id = #{merchantId}
+        </if>
+        ORDER BY o.created_at DESC
+    </select>
+
+    <!--
+      全量查询订单（不联查订单项，索引重建时再按 orderId 批量取项）
+      供 order 索引全量重建使用。
+    -->
+    <select id="selectAllForIndex" resultMap="OrderDetailMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM orders o
+        ORDER BY o.id
+    </select>
+
+</mapper>

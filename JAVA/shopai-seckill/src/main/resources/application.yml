@@ -1,0 +1,134 @@
+# ======================================================================
+# shopai-seckill 秒杀服务配置
+# 职责：秒杀活动管理、独立秒杀库存、Redis 预热 + Lua 原子扣减、
+#       MQ 异步下单、本地消息表最终一致性、一人一单。
+# 端口：8087（网关 8080 路由 /api/seckill/** 至此）
+# 说明：本服务不各自验签 JWT（网关统一认证），身份从 X-User-* 头读取（CurrentUser）。
+#       秒杀库存**完全独立**，不与 shopai-inventory 的 inventory 表联动；
+#       SKU/商品信息不落库，一律 Feign 调 shopai-product 内部接口实时取。
+# ======================================================================
+
+server:
+  port: 8087
+  # 秒杀场景下 Tomcat 连接数要放大：瞬时并发远高于常规接口。
+  # 真正的流量闸门是 Sentinel 限流 + Redis 原子扣减，线程池只需保证不成为瓶颈。
+  tomcat:
+    threads:
+      max: 500
+      min-spare: 50
+    accept-count: 1000
+    max-connections: 10000
+
+spring:
+  application:
+    name: shopai-seckill
+
+  # ---------- Nacos 配置中心（按需启用；本地无 Nacos 时注释掉 cloud.nacos 与 config.import） ----------
+  cloud:
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+      # 秒杀接口在代码里用 @SentinelResource 声明限流，
+      # 限流规则建议配在 Sentinel 控制台（持久化到 Nacos），不写死在 yml。
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+  config:
+    import:
+      - optional:nacos:shopai-seckill.yml
+
+  # ---------- 数据源（hcq_shop 库；本服务只访问 seckill_* 五张表，不跨服务 JOIN） ----------
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/hcq_shop?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username:
+    password:
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      connection-timeout: 30000
+
+  # ---------- Redis（秒杀库存预热 / Lua 原子扣减 / 一人一单 / 结果轮询） ----------
+  data:
+    redis:
+      cluster:
+        nodes:
+
+        max-redirects: 3
+      timeout: 5000
+
+  # ---------- RabbitMQ（抢购成功 → 异步创建订单） ----------
+  rabbitmq:
+    addresses: 127.0.0.1:5672,127.0.0.1:5673,127.0.0.1:5674
+    username: guest
+    password: guest
+    virtual-host: /
+    # 生产者：开启 confirm/return，投递失败可感知（配合本地消息表重试）
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        prefetch: 10
+        acknowledge-mode: auto
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 1000
+          multiplier: 2
+          max-attempts: 3
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+# ---------- MyBatis-Plus ----------
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.shopai.seckill.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      # 逻辑删除：与建表脚本的 deleted 字段对齐
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# ---------- Feign（调商品服务取 SKU/商品信息、调订单服务创建订单） ----------
+feign:
+  httpclient:
+    enable: true
+    max-connections: 500 # 秒杀场景并发高，连接池要比常规服务大
+    max-connections-per-route: 100
+  sentinel:
+    enabled: true # 开启 sentinel 支持（用户既有约定）
+
+# ---------- 秒杀业务参数 ----------
+seckill:
+  # 抢购结果在 Redis 中的保留时长（秒）：前端轮询拿结果，30 分钟足够
+  result-ttl-seconds: 1800
+  # 活动开始前多久自动预热库存到 Redis（秒）。默认提前 10 分钟。
+  preheat-ahead-seconds: 600
+  # 本地消息表最大重试次数，超过则回补库存并置 failed
+  message-max-retry: 5
+  # 定时任务每批处理条数，避免一次扫全表
+  task-batch-size: 200
+  # 抢购记录多久没成单就判定为超时并回补库存（秒）。默认 15 分钟。
+  order-timeout-seconds: 900
+
+# ---------- 上传路径（本服务不托管静态资源，仅保证启动不报错） ----------
+upload:
+  path: D:\ShopAi\VorI\Images
+
+logging:
+  level:
+    com.shopai.seckill: debug

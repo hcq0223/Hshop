@@ -1,0 +1,91 @@
+# ======================================================================
+# shopai-merchant 商家/评价服务配置
+# 职责：商家入驻/审核、店铺/实名修改审核、提现、财务、周营收、实名认证、评价、评价投诉；
+#       商家信息/审核通过后发 MQ merchant.changed。
+# 端口：8084（网关 8080 路由 /api/merchant/**、/api/admin/merchants/**、/api/review/** 至此）
+# 说明：微服务拆分后，本服务不再各自验签 JWT（网关统一认证），
+#       身份从 X-User-* 头读取（CurrentUser 工具类）。
+# ======================================================================
+
+server:
+  port: 8084
+
+spring:
+  application:
+    name: shopai-merchant
+
+  # ---------- Nacos 配置中心（按需启用；本地无 Nacos 时注释掉 cloud.nacos 与 config.import） ----------
+  cloud:
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8858
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+  config:
+    import:
+      - optional:nacos:shopai-merchant.yml
+
+  # ---------- 数据源（共享单库 hcq_shop，与单体一致） ----------
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/hcq_shop?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username:
+    password:
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      connection-timeout: 30000
+
+  # ---------- Redis ----------
+  data:
+    redis:
+      cluster:
+        nodes:
+
+        max-redirects: 3
+      timeout: 5000
+
+  # ---------- RabbitMQ（商家变更事件 → 搜索服务） ----------
+  rabbitmq:
+    host: 127.0.0.1
+    port: 5672
+    username: guest
+    password: guest
+
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+
+# ---------- Feign（与服务调用相关） ----------
+feign:
+  httpclient:
+    enable: true
+    max-connections: 200 # 最大连接数
+    max-connections-per-route: 50 # 单个路径最大连接数
+  sentinel:
+    enabled: true # 开启sentinel支持
+
+# ---------- MyBatis-Plus ----------
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.shopai.merchant.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    default-type-handler: com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler
+
+# ---------- 上传路径（静态资源 /uploads/** 由网关或资源服务托管，这里仅保证启动不报错） ----------
+upload:
+  path: D:\ShopAi\VorI\Images
+
+logging:
+  level:
+    com.shopai.merchant: debug

@@ -1,0 +1,239 @@
+数据库表结构：
+
+-- 1. 统一用户表（仅存储登录凭证和角色标识）
+CREATE TABLE users (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE COMMENT '登录账号',
+    password_hash VARCHAR(255) NOT NULL COMMENT '加密密码',
+    phone VARCHAR(20) UNIQUE COMMENT '手机号',
+    email VARCHAR(100) UNIQUE COMMENT '邮箱',
+    role ENUM('customer', 'merchant', 'admin') NOT NULL DEFAULT 'customer' COMMENT '角色类型',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '1:正常 0:禁用',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- 2. 客户扩展表（C端专属信息）
+CREATE TABLE customers (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL UNIQUE COMMENT '关联users表',
+    nickname VARCHAR(50) COMMENT '昵称',
+    avatar_url VARCHAR(500) COMMENT '头像',
+    gender ENUM('male', 'female', 'other') COMMENT '性别(用于推荐)',
+    default_address_id BIGINT UNSIGNED COMMENT '默认收货地址ID',
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- 3. 商户扩展表（B端专属信息）
+CREATE TABLE merchants (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL UNIQUE COMMENT '关联users表',
+    shop_name VARCHAR(100) NOT NULL COMMENT '店铺名称',
+    logo_url VARCHAR(500) COMMENT '店铺Logo',
+    business_license VARCHAR(500) COMMENT '营业执照URL',
+    contact_name VARCHAR(50) NOT NULL COMMENT '联系人姓名',
+    contact_phone VARCHAR(20) NOT NULL COMMENT '联系电话',
+    shop_description TEXT COMMENT '店铺简介',
+    rating DECIMAL(3,2) DEFAULT 5.00 COMMENT '店铺评分',
+    is_verified TINYINT DEFAULT 0 COMMENT '是否实名认证',
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- 4. 收货地址表（仅客户使用）
+CREATE TABLE addresses (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    customer_id BIGINT UNSIGNED NOT NULL,
+    receiver_name VARCHAR(50) NOT NULL,
+    receiver_phone VARCHAR(20) NOT NULL,
+    province VARCHAR(50) NOT NULL,
+    city VARCHAR(50) NOT NULL,
+    district VARCHAR(50) NOT NULL,
+    detail_address VARCHAR(255) NOT NULL,
+    is_default TINYINT DEFAULT 0,
+    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE
+);
+
+
+
+-- 5. 商品分类表
+CREATE TABLE categories (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    parent_id INT UNSIGNED DEFAULT 0 COMMENT '父分类ID，0为顶级',
+    name VARCHAR(50) NOT NULL COMMENT '如：男装/女装/外套/T恤',
+    sort_order INT DEFAULT 0
+);
+
+-- 6. 商品SPU表（标准产品单元，描述款式本身）
+CREATE TABLE products (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    merchant_id BIGINT UNSIGNED NOT NULL COMMENT '所属商户',
+    category_id INT UNSIGNED NOT NULL,
+    name VARCHAR(200) NOT NULL COMMENT '商品名称',
+    description TEXT COMMENT '商品详情(富文本)',
+    main_image VARCHAR(500) COMMENT '主图',
+    images JSON COMMENT '图片列表JSON数组',
+    price_min DECIMAL(10,2) COMMENT '最低价(冗余字段，加速列表查询)',
+    price_max DECIMAL(10,2) COMMENT '最高价',
+    sales_count INT DEFAULT 0 COMMENT '总销量',
+    status ENUM('draft', 'on_sale', 'off_sale') DEFAULT 'draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (merchant_id) REFERENCES merchants(id),
+    FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+
+-- 7. 商品SKU表（最小库存单元，对应具体颜色+尺码）
+CREATE TABLE product_skus (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    product_id BIGINT UNSIGNED NOT NULL,
+    sku_code VARCHAR(100) NOT NULL UNIQUE COMMENT 'SKU编码',
+    color VARCHAR(50) NOT NULL COMMENT '颜色',
+    size VARCHAR(20) NOT NULL COMMENT '尺码(S/M/L/XL或数字码)',
+    price DECIMAL(10,2) NOT NULL COMMENT '该规格价格',
+    stock INT NOT NULL DEFAULT 0 COMMENT '库存数量',
+    image_url VARCHAR(500) COMMENT '该规格对应图片',
+    weight DECIMAL(8,2) COMMENT '重量(g)，用于运费计算',
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    INDEX idx_product_id (product_id)
+);
+
+
+-- 8. 购物车表（仅客户）
+CREATE TABLE shopping_cart (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    customer_id BIGINT UNSIGNED NOT NULL,
+    sku_id BIGINT UNSIGNED NOT NULL,
+    quantity INT NOT NULL DEFAULT 1,
+    selected TINYINT DEFAULT 1 COMMENT '是否选中',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+    FOREIGN KEY (sku_id) REFERENCES product_skus(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_customer_sku (customer_id, sku_id)
+);
+
+-- 9. 订单主表
+CREATE TABLE orders (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    order_no VARCHAR(32) NOT NULL UNIQUE COMMENT '订单编号',
+    customer_id BIGINT UNSIGNED NOT NULL,
+    merchant_id BIGINT UNSIGNED NOT NULL COMMENT '按商户拆单，方便结算',
+    total_amount DECIMAL(10,2) NOT NULL COMMENT '订单总金额',
+    pay_amount DECIMAL(10,2) COMMENT '实付金额',
+    freight_amount DECIMAL(10,2) DEFAULT 0.00 COMMENT '运费',
+    status ENUM('pending_pay', 'paid', 'shipped', 'received', 'completed', 'cancelled', 'refunding') NOT NULL DEFAULT 'pending_pay',
+    receiver_snapshot JSON NOT NULL COMMENT '收货地址快照(防止地址修改影响历史订单)',
+    payment_method VARCHAR(20) COMMENT '支付方式',
+    paid_at DATETIME,
+    shipped_at DATETIME,
+    completed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (customer_id) REFERENCES customers(id),
+    FOREIGN KEY (merchant_id) REFERENCES merchants(id),
+    INDEX idx_customer_status (customer_id, status),
+    INDEX idx_merchant_status (merchant_id, status)
+);
+
+-- 10. 订单明细表
+CREATE TABLE order_items (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    order_id BIGINT UNSIGNED NOT NULL,
+    product_id BIGINT UNSIGNED NOT NULL,
+    sku_id BIGINT UNSIGNED NOT NULL,
+    product_name VARCHAR(200) NOT NULL COMMENT '商品名快照',
+    sku_attrs VARCHAR(100) NOT NULL COMMENT '规格快照 如"红色/XL"',
+    price DECIMAL(10,2) NOT NULL COMMENT '下单时单价快照',
+    quantity INT NOT NULL,
+    image_url VARCHAR(500) COMMENT '商品图快照',
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+
+-- 11. 商品评价表
+CREATE TABLE reviews (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    order_item_id BIGINT UNSIGNED NOT NULL UNIQUE COMMENT '一个订单项只能评价一次',
+    customer_id BIGINT UNSIGNED NOT NULL,
+    product_id BIGINT UNSIGNED NOT NULL,
+    rating TINYINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    content TEXT,
+    images JSON COMMENT '评价图片',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_item_id) REFERENCES order_items(id),
+    FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+-- 12商家实名认证表（关联 merchants.id）
+CREATE TABLE `merchant_real_name` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '商家ID（关联merchants.id）',
+  `real_name` VARCHAR(50) NOT NULL COMMENT '真实姓名',
+  `card_id` VARCHAR(18) NOT NULL COMMENT '身份证号码',
+  `card_url` VARCHAR(500) DEFAULT NULL COMMENT '身份证照片URL',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_merchant_id` (`merchant_id`) COMMENT '确保一个商家仅有一条实名记录',
+  KEY `idx_card_id` (`card_id`) COMMENT '身份证号检索索引',
+  CONSTRAINT `fk_merchant_real_name_merchant` FOREIGN KEY (`merchant_id`) 
+    REFERENCES `merchants` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家实名认证表';
+
+13 ShopAi 商户信息修改申请表
+-- 用于商家提交店铺信息/实名信息修改，管理员审核通过后才生效
+-- =====================================================
+CREATE TABLE IF NOT EXISTS `merchant_modifications` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `merchant_id` BIGINT NOT NULL COMMENT '商户ID（关联 merchants.id）',
+    `shop_name` VARCHAR(100) NOT NULL COMMENT '店铺名称（当时快照，便于审核查看）',
+    `type` VARCHAR(20) NOT NULL DEFAULT 'store' COMMENT '修改类型：store=店铺信息, realname=实名信息',
+    `change_detail` TEXT NOT NULL COMMENT '修改项（JSON格式）',
+    `status` VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT '状态：pending=待审核, approved=已通过, rejected=已拒绝',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '提交时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_merchant_id` (`merchant_id`),
+    KEY `idx_status` (`status`),
+    KEY `idx_type` (`type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商户信息修改申请表';
+
+ALTER TABLE merchant_modifications ADD COLUMN `type` VARCHAR(20) NOT NULL DEFAULT 'store' COMMENT '修改类型' AFTER `shop_name`;
+
+
+
+-- ============================================================
+-- 订单状态机 + 商家资产 + 售后相关 数据库变更
+-- 2026-07-25
+-- ============================================================
+
+-- 1. 订单表新增字段：物流单号、售后相关、资金结算
+ALTER TABLE orders
+    ADD COLUMN tracking_number VARCHAR(64) DEFAULT NULL COMMENT '物流单号',
+    ADD COLUMN tracking_company VARCHAR(32) DEFAULT NULL COMMENT '物流公司',
+    ADD COLUMN refund_amount DECIMAL(12,2) DEFAULT NULL COMMENT '退款金额',
+    ADD COLUMN refund_reason VARCHAR(512) DEFAULT NULL COMMENT '退款/退货原因',
+    ADD COLUMN refund_type VARCHAR(16) DEFAULT NULL COMMENT '退款类型: refund(仅退款), return_refund(退货退款)',
+    ADD COLUMN return_tracking_number VARCHAR(64) DEFAULT NULL COMMENT '退货物流单号（顾客填）',
+    ADD COLUMN return_tracking_company VARCHAR(32) DEFAULT NULL COMMENT '退货物流公司（顾客填）',
+    ADD COLUMN refund_requested_at DATETIME DEFAULT NULL COMMENT '退款申请时间',
+    ADD COLUMN refund_resolved_at DATETIME DEFAULT NULL COMMENT '退款处理完成时间',
+    ADD COLUMN pre_refund_status VARCHAR(16) DEFAULT NULL COMMENT '进入退款前的状态（拒绝退款时回退用）',
+    ADD COLUMN settled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '资金是否已结算 0=未结算 1=已结算（已完成后才结算）',
+    ADD COLUMN auto_received TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否系统自动签收 0=否 1=是',
+    ADD COLUMN auto_completed TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否系统自动完成 0=否 1=是';
+
+-- 2. 商家表新增字段：总营收、可提现余额、冻结余额
+ALTER TABLE merchants
+    ADD COLUMN total_revenue DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '总营收（累计入账）',
+    ADD COLUMN available_balance DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '可提现余额',
+    ADD COLUMN frozen_balance DECIMAL(14,2) NOT NULL DEFAULT 0.00 COMMENT '冻结余额（退款中/待结算）';
+
+-- 3. 售后操作日志表（追溯每次状态变更和操作记录）
+CREATE TABLE IF NOT EXISTS order_action_logs (
+    id BIGINT NOT NULL COMMENT '雪花ID',
+    order_id BIGINT NOT NULL COMMENT '订单ID',
+    action VARCHAR(32) NOT NULL COMMENT '操作类型: create/pay/cancel/ship/receive/complete/refund_request/refund_approve/refund_reject/force_cancel/force_refund/force_complete/auto_receive/auto_complete',
+    operator_type VARCHAR(16) NOT NULL COMMENT '操作人类型: customer/merchant/admin/system',
+    operator_id BIGINT DEFAULT NULL COMMENT '操作人ID',
+    detail TEXT DEFAULT NULL COMMENT '操作详情JSON',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_order_id (order_id),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单操作日志';
+

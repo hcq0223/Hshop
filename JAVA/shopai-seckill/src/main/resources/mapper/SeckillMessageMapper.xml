@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.shopai.seckill.mapper.SeckillMessageMapper">
+
+    <sql id="Base_Column_List">
+        id, msg_id, activity_id, stock_id, record_id, user_id, customer_id, sku_id, quantity,
+        payload, status, retry_count, max_retry, next_retry_at, error_msg,
+        deleted, created_at, updated_at
+    </sql>
+
+    <!--
+      捞待投递 / 待重试的消息。
+
+      两个状态都在里面：
+        - pending：本地事务写进去还没投递成功的（投递时进程挂了、MQ 连不上）；
+        - sent：已投到 MQ，但可能消费端还没处理完。由调用方再判一次「投出去多久了」，
+          太久没变 done 就重投（消费端靠 msgId 幂等，重投不会重复下单）。
+
+      retry_count &lt; max_retry 把「已放弃」的排除掉，
+      避免它们被反复捞出来空转。
+    -->
+    <select id="selectNeedRetry" resultType="com.shopai.seckill.entity.SeckillMessage">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM seckill_message
+        WHERE deleted = 0
+          AND status IN ('pending', 'sent')
+          AND retry_count &lt; max_retry
+          AND next_retry_at &lt;= #{now}
+        ORDER BY next_retry_at ASC
+        LIMIT #{limit}
+    </select>
+
+    <update id="markRetry">
+        UPDATE seckill_message
+        SET retry_count   = retry_count + 1,
+            next_retry_at = #{nextRetryAt},
+            error_msg     = #{errorMsg},
+            updated_at    = NOW()
+        WHERE id = #{id}
+          AND deleted = 0
+    </update>
+
+    <update id="markSent">
+        UPDATE seckill_message
+        SET status       = 'sent',
+            next_retry_at = DATE_ADD(NOW(), INTERVAL 30 SECOND),
+            updated_at   = NOW()
+        WHERE id = #{id}
+          AND deleted = 0
+    </update>
+
+    <update id="markDone">
+        UPDATE seckill_message
+        SET status     = 'done',
+            updated_at = NOW()
+        WHERE id = #{id}
+          AND deleted = 0
+    </update>
+
+    <update id="markFailed">
+        UPDATE seckill_message
+        SET status     = 'failed',
+            error_msg  = #{errorMsg},
+            updated_at = NOW()
+        WHERE id = #{id}
+          AND deleted = 0
+    </update>
+
+</mapper>

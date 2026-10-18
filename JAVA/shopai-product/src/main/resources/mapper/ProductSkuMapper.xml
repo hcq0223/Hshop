@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  SKU Mapper XML
+  微服务拆分说明：从原单体 src/main/resources/mapper/ProductSkuMapper.xml 迁移至 shopai-product 服务，
+  namespace 由 com.example.demo.mapper.ProductSkuMapper 变更为 com.shopai.product.mapper.ProductSkuMapper。
+  已移除 decreaseStock 扣减库存 SQL（迁至 shopai-inventory 服务）。
+-->
+<mapper namespace="com.shopai.product.mapper.ProductSkuMapper">
+
+    <!-- SKU 表全字段 -->
+    <sql id="Base_Column_List">
+        id, product_id, sku_code, color, size,
+        price, stock, image_url, weight
+    </sql>
+
+    <!-- 按商品ID查询所有SKU -->
+    <select id="selectByProductId" resultType="com.shopai.product.entity.ProductSku">
+        SELECT <include refid="Base_Column_List"/>
+        FROM product_skus
+        WHERE product_id = #{productId}
+        ORDER BY id ASC
+    </select>
+
+    <!-- 按主键查询 -->
+    <select id="selectBySkuId" resultType="com.shopai.product.entity.ProductSku">
+        SELECT <include refid="Base_Column_List"/>
+        FROM product_skus
+        WHERE id = #{id}
+    </select>
+
+    <!-- 按SKU编码查询 -->
+    <select id="selectBySkuCode" resultType="com.shopai.product.entity.ProductSku">
+        SELECT <include refid="Base_Column_List"/>
+        FROM product_skus
+        WHERE sku_code = #{skuCode}
+        LIMIT 1
+    </select>
+
+</mapper>

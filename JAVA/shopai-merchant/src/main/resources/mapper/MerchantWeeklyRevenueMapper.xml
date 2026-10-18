@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  商家周营收归档 Mapper XML（shopai-merchant 服务）
+  微服务拆分说明：从原单体 com.example.demo.mapper.MerchantWeeklyRevenueMapper.xml 迁移，
+  namespace 变更为 com.shopai.merchant.mapper.MerchantWeeklyRevenueMapper。
+-->
+<mapper namespace="com.shopai.merchant.mapper.MerchantWeeklyRevenueMapper">
+
+    <select id="selectByMerchantId" resultType="com.shopai.merchant.entity.MerchantWeeklyRevenue">
+        SELECT id, merchant_id, week_start, week_end, total_revenue, total_orders, created_at
+        FROM merchant_weekly_revenue
+        WHERE merchant_id = #{merchantId}
+        ORDER BY week_start DESC
+    </select>
+
+</mapper>

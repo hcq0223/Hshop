@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  收货地址 Mapper XML（shopai-order 服务）
+  微服务拆分说明：从原单体 src/main/resources/mapper/AddressMapper.xml 迁移，
+  namespace 由 com.example.demo.mapper.AddressMapper 变更为 com.shopai.order.mapper.AddressMapper。
+-->
+<mapper namespace="com.shopai.order.mapper.AddressMapper">
+
+    <!-- 地址表全字段 -->
+    <sql id="Base_Column_List">
+        id, customer_id, receiver_name, receiver_phone,
+        province, city, district, detail_address, is_default
+    </sql>
+
+    <!-- 1. 查询某客户所有地址，默认地址排最前 -->
+    <select id="selectByCustomerId" resultType="com.shopai.order.entity.Address">
+        SELECT <include refid="Base_Column_List"/>
+        FROM addresses
+        WHERE customer_id = #{customerId}
+        ORDER BY is_default DESC, id DESC
+    </select>
+
+    <!-- 2. 查询默认地址 -->
+    <select id="selectDefaultByCustomerId" resultType="com.shopai.order.entity.Address">
+        SELECT <include refid="Base_Column_List"/>
+        FROM addresses
+        WHERE customer_id = #{customerId}
+        AND is_default = 1
+        LIMIT 1
+    </select>
+
+    <!-- 3. 按主键查单个地址 -->
+    <select id="selectById" resultType="com.shopai.order.entity.Address">
+        SELECT <include refid="Base_Column_List"/>
+        FROM addresses
+        WHERE id = #{id}
+    </select>
+
+    <!-- 4. 清空某客户所有默认标记 -->
+    <update id="clearDefaultByCustomerId">
+        UPDATE addresses
+        SET is_default = 0
+        WHERE customer_id = #{customerId}
+    </update>
+
+    <!-- 5. 设置指定地址为默认 -->
+    <update id="setDefault">
+        UPDATE addresses
+        SET is_default = 1
+        WHERE id = #{id}
+        AND customer_id = #{customerId}
+    </update>
+
+</mapper>
