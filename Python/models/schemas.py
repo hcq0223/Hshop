@@ -4,7 +4,7 @@
 # ============================================
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Any, Literal, Dict
 
 
 # ============================================
@@ -13,33 +13,18 @@ from typing import Optional, List, Dict, Any
 
 class ChatMessage(BaseModel):
     """单条对话消息"""
-    role: str = Field(..., description="消息角色：user / assistant / system")
-    content: str = Field(..., description="消息内容")
-
-    class Config:
-        json_schema_extra = {
-            "example": {"role": "user", "content": "帮我推荐一件夏季T恤"}
-        }
+    role: Literal["user", "assistant"] = Field(..., description="消息角色，只允许 user / assistant")
+    content: str = Field(..., min_length=1, max_length=4000, description="消息内容")
 
 
 class ChatRequest(BaseModel):
     """对话请求体"""
-    message: str = Field(..., description="用户当前输入的消息", min_length=1)
+    message: str = Field(..., min_length=1, max_length=2000, description="用户当前输入的消息")
     history: Optional[List[ChatMessage]] = Field(
         default=None,
-        description="历史对话记录，最多保留最近10轮"
+        max_length=20,
+        description="历史对话记录，最多保留最近10轮",
     )
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "message": "我的订单到哪了？",
-                "history": [
-                    {"role": "user", "content": "你好"},
-                    {"role": "assistant", "content": "你好！有什么可以帮你的？"},
-                ],
-            }
-        }
 
 
 class ChatResponse(BaseModel):

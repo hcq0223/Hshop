@@ -4,14 +4,12 @@
 # ============================================
 
 import json
-import re
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional, List
 from openai import AsyncOpenAI
 from config import settings
-
+import threading
 import time
-
 
 # ============================================
 # 会话级工具结果记忆（跨请求保留）
@@ -20,9 +18,26 @@ import time
 #       模型引用，以便"删除那件商品"这类后续操作能拿到标识。
 # 注意: 这些数据只注入给模型内部使用，不得展示给用户。
 # ============================================
+
+
 _AGENT_SESSIONS: dict = {}
-_MAX_SESSION_TOOLS = 10   # 每用户最多保留最近 N 条工具结果
-_MAX_SESSION_AGE = 1800   # 超过 30 分钟的工具结果视为过期
+_MAX_SESSION_TOOLS = 10  # 每用户最多保留最近 N 条工具结果
+_MAX_SESSION_AGE = 1800  # 超过 30 分钟的工具结果视为过期
+_MAX_SESSION_USERS = 500  # 最多同时保留多少个用户（LRU 淘汰）
+_SESSION_IDLE = 3600  # 用户 1 小时无活动则整段清空
+_SESSION_LOCK = threading.Lock()
+
+
+def _purge_sessions(now: float) -> None:
+    """清理空闲用户 + LRU 淘汰，调用方需持锁"""
+    for uid in [u for u, es in _AGENT_SESSIONS.items()
+                if not es or now - es[-1]["time"] > _SESSION_IDLE]:
+        _AGENT_SESSIONS.pop(uid, None)
+    overflow = len(_AGENT_SESSIONS) - _MAX_SESSION_USERS
+    if overflow > 0:
+        oldest = sorted(_AGENT_SESSIONS.items(), key=lambda kv: kv[1][-1]["time"])
+        for uid, _ in oldest[:overflow]:
+            _AGENT_SESSIONS.pop(uid, None)
 
 
 class BaseAgent(ABC):
@@ -49,6 +64,12 @@ class BaseAgent(ABC):
         "get_product_detail",
     }
 
+    # 只读工具：允许通过「文本形式工具调用」执行（防提示词注入触发写操作）
+    READONLY_TOOLS = {
+        "search_products", "get_hot_products", "get_product_detail",
+        "search_merchants", "get_merchant", "get_my_orders", "get_order_detail",
+    }
+
     def __init__(self, system_prompt: str, tools: list):
         self.client = AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
@@ -68,6 +89,7 @@ class BaseAgent(ABC):
         """记录一次工具调用结果到会话记忆"""
         if user_id is None:
             return
+
         now = time.time()
         entry = {
             "time": now,
@@ -75,21 +97,26 @@ class BaseAgent(ABC):
             "args": arguments or {},
             "result": result or {},
         }
-        sess = _AGENT_SESSIONS.setdefault(user_id, [])
-        sess.append(entry)
-        # 裁剪：只保留最近 N 条
-        if len(sess) > _MAX_SESSION_TOOLS:
-            del sess[: len(sess) - _MAX_SESSION_TOOLS]
+
+        with _SESSION_LOCK:
+            _purge_sessions(now)
+            sess = _AGENT_SESSIONS.setdefault(user_id, [])
+            sess.append(entry)
+            # 裁剪：只保留最近 N 条
+            if len(sess) > _MAX_SESSION_TOOLS:
+                del sess[: len(sess) - _MAX_SESSION_TOOLS]
 
     @staticmethod
     def _recent_tool_results(user_id, max_age=_MAX_SESSION_AGE, limit=_MAX_SESSION_TOOLS):
         """获取用户近期工具结果（按时间倒序，最多 limit 条）"""
         if user_id is None:
             return []
-        sess = _AGENT_SESSIONS.get(user_id) or []
-        now = time.time()
-        recent = [e for e in sess if now - e["time"] <= max_age]
-        return recent[-limit:] if recent else []
+
+        with _SESSION_LOCK:
+            sess = list(_AGENT_SESSIONS.get(user_id) or [])
+            now = time.time()
+            recent = [e for e in sess if now - e["time"] <= max_age]
+            return recent[-limit:] if recent else []
 
     @staticmethod
     def _build_session_context(user_id) -> str:
@@ -105,7 +132,7 @@ class BaseAgent(ABC):
         return "\n".join(lines)
 
     def _build_messages(
-        self, user_id: int, message: str, history: Optional[list] = None
+            self, user_id: int, message: str, history: Optional[list] = None
     ) -> list:
         """构建发给 LLM 的完整消息列表：[system, ...历史, user]"""
         messages = [{"role": "system", "content": self.system_prompt}]
@@ -122,8 +149,8 @@ class BaseAgent(ABC):
     # 普通对话（非流式）
     # ============================================
     async def chat(
-        self, user_id: int, message: str, token: str = "",
-        history: Optional[list] = None,
+            self, user_id: int, message: str, token: str = "",
+            history: Optional[list] = None,
     ) -> str:
         self._current_token = token
         messages = self._build_messages(user_id, message, history)
@@ -152,26 +179,45 @@ class BaseAgent(ABC):
         if not text:
             return text, []
 
+        # 用 JSONDecoder.raw_decode 按真实 JSON 语法扫描，天然支持任意层级嵌套。
+        # 早先用正则 `.*?\}\}` 非贪婪匹配，遇到 {"a":{"b":1}} 会在第一个 "}}" 处
+        # 截断导致 json.loads 失败——既没执行工具，又把原始 JSON 留在正文里漏给用户。
         tool_calls = []
-        pattern = re.compile(
-            r"(?:isphere|action|tool_call|invoke|\[|\()?"
-            r'(\{"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{.*?\}\})',
-            re.DOTALL,
-        )
+        kept: List[str] = []
+        decoder = json.JSONDecoder()
+        idx = 0
 
-        def repl(m):
-            raw = m.group(1)
+        while True:
+            start = text.find('{"name"', idx)
+            if start == -1:
+                kept.append(text[idx:])
+                break
+
+            kept.append(text[idx:start])
+
             try:
-                data = json.loads(raw)
-                if isinstance(data, dict) and data.get("name"):
-                    tool_calls.append(data)
-                    return ""
-            except (json.JSONDecodeError, TypeError):
-                pass
-            return raw
+                obj, end = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                # 命中 {"name" 但 JSON 不完整（多为 max_tokens 截断）。
+                # 整段丢弃到结尾：解析不了也绝不能把半截 JSON 漏给用户。
+                print(
+                    f"[_parse_text_tool_calls] 疑似工具调用但 JSON 不完整，已丢弃: "
+                    f"{text[start:start + 80]!r}"
+                )
+                idx = len(text)
+                continue
 
-        clean_text = pattern.sub(repl, text)
-        return clean_text, tool_calls
+            if isinstance(obj, dict) and obj.get("name"):
+                tool_calls.append(obj)
+            else:
+                # 形似工具调用却缺少 name，同样不展示给用户
+                print(
+                    f"[_parse_text_tool_calls] 形似工具调用但缺少 name，已丢弃: "
+                    f"{text[start:start + 80]!r}"
+                )
+            idx = end
+
+        return "".join(kept), tool_calls
 
     # ============================================
     # 强制检索注入：从工具结果中提取真实商品清单
@@ -244,19 +290,18 @@ class BaseAgent(ABC):
     # 支持工具调用 + 商品强制注入校验
     # ============================================
     async def chat_stream(
-        self, user_id: int, message: str, token: str = "",
-        history: Optional[list] = None,
+            self, user_id: int, message: str, token: str = "",
+            history: Optional[list] = None,
     ) -> AsyncGenerator[str, None]:
         self._current_token = token
         messages = self._build_messages(user_id, message, history)
 
         # 注入会话级工具结果记忆（上一轮查询到的数据，本轮可引用其中的 ID）
+        # 会话级工具结果记忆并入首条 system：
+        # 多数 OpenAI 兼容网关只认第一条 system，追加第 4 条会被忽略或 400
         session_ctx = self._build_session_context(user_id)
         if session_ctx:
-            messages.append({
-                "role": "system",
-                "content": session_ctx,
-            })
+            messages[0]["content"] = messages[0]["content"] + "\n\n" + session_ctx
             print(f"[chat_stream] 已注入会话记忆: {session_ctx[:120]}...")
 
         # 记录本对话中出现过的真实商品名（跨轮累积）
@@ -306,16 +351,52 @@ class BaseAgent(ABC):
                         collected_content += delta.content
 
             except Exception as e:
-                yield f"data: [LLM调用出错: {str(e)}]\n\n"
+                # 原始异常只进服务端日志，不回给前端（会泄漏 base_url、上游返回体、内网路径）
+                print(f"[chat_stream] LLM 调用失败: {type(e).__name__}: {e}")
+                yield "data: [服务暂时不可用，请稍后重试]\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
             # 文本形式工具调用解析
             clean_content, text_tool_calls = self._parse_text_tool_calls(collected_content)
             standard_calls = list(collected_tool_calls.values())
+            # 模型可能同时给出原生 tool_calls 和文本版工具调用，
+            # 去重避免同一个工具被重复执行两次。
+            # 注意：原生 tool_calls 的 arguments 是 JSON 字符串，
+            # 文本版的 arguments 已经是 dict，必须归一化后再比较。
+            _seen_calls = set()
+            for _c in standard_calls:
+                try:
+                    _args = json.loads(_c["arguments"]) if _c["arguments"] else {}
+                except json.JSONDecodeError:
+                    _args = {}
+                _seen_calls.add((
+                    _c["name"],
+                    json.dumps(_args, ensure_ascii=False, sort_keys=True),
+                ))
+            text_tool_calls = [
+                t for t in text_tool_calls
+                if (
+                       t.get("name"),
+                       json.dumps(t.get("arguments") or {}, ensure_ascii=False, sort_keys=True),
+                   ) not in _seen_calls
+            ]
+            # ↓↓↓ 新增：文本工具调用开关 + 只读白名单 ↓↓↓
+            if text_tool_calls and not settings.TEXT_TOOL_CALL_ENABLED:
+                print(f"[chat_stream] 忽略文本工具调用（未启用）: {[c.get('name') for c in text_tool_calls]}")
+                text_tool_calls = []
+
+            if text_tool_calls:
+                before = len(text_tool_calls)
+                text_tool_calls = [c for c in text_tool_calls if c.get("name") in self.READONLY_TOOLS]
+                if len(text_tool_calls) < before:
+                    print(f"[chat_stream] 文本工具调用仅允许只读工具，已丢弃 {before - len(text_tool_calls)} 个")
+
             print(f"[chat_stream]   轮{round_no + 1} 收集到文本: {collected_content[:100]!r}")
-            print(f"[chat_stream]   轮{round_no + 1} 标准tool_calls: {[(c['name'], c['arguments']) for c in standard_calls]}")
-            print(f"[chat_stream]   轮{round_no + 1} 文本tool_calls: {[(t.get('name'), t.get('arguments')) for t in text_tool_calls]}")
+            print(
+                f"[chat_stream]   轮{round_no + 1} 标准tool_calls: {[(c['name'], c['arguments']) for c in standard_calls]}")
+            print(
+                f"[chat_stream]   轮{round_no + 1} 文本tool_calls: {[(t.get('name'), t.get('arguments')) for t in text_tool_calls]}")
 
             # 没有工具调用 → 纯净正文（含回复校验）流出，结束
             if not standard_calls and not text_tool_calls:
@@ -324,19 +405,20 @@ class BaseAgent(ABC):
                 if clean_content and real_product_names:
                     hint = self._verify_product_names(clean_content, real_product_names)
                     if hint:
-                        clean_content = clean_content + "\n\n" + hint
+                        # clean_content = clean_content + "\n\n" + hint
+                        # 校验未通过时只记日志，绝不拼进用户可见回复
+                        # （原写法会让顾客直接看到【系统提示】原文）
+                        print(f"[chat_stream] 商品校验未通过: {hint}")
                 if clean_content:
                     # JSON 编码：把内容里的换行转成 \n，避免破坏 SSE 帧结构
-                    #（SSE 不允许 payload 里有裸换行，否则前端按行解析会截断）
+                    # （SSE 不允许 payload 里有裸换行，否则前端按行解析会截断）
                     yield f"data: {json.dumps(clean_content, ensure_ascii=False)}\n\n"
+                else:
+                    yield "data: 抱歉，我没能理解你的问题，请换个说法再试一次。\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
             print(f"[chat_stream]   轮{round_no + 1} 有工具调用 → 丢弃过渡话语: {clean_content[:80]!r}")
-            # 有工具调用 → 不流出本轮的过渡话语（如"我来帮您查一下"）
-            # 原因：模型可能连续多轮调用工具，提前流出会导致碎片拼接
-            #（"我来帮您查一下~稍等~有1笔订单：..."），而最终回答还没生成。
-            # 过渡话语统一丢弃，只保留最终无工具调用那一轮的完整回答。
 
             # ---- 执行所有工具 ----
             standard_results = []
@@ -453,31 +535,40 @@ class BaseAgent(ABC):
     # 工具调用处理（自动循环，子类不需要管）
     # ============================================
     async def _process_response(self, response, messages: list) -> str:
-        choice = response.choices[0]
+        """非流式：最多 5 轮工具调用，每轮工具异常都兜底，避免整个请求 500"""
+        for _ in range(5):
+            choice = response.choices[0]
 
-        if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
-            return choice.message.content or ""
+            if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
+                return choice.message.content or ""
 
-        messages.append(choice.message)
+            messages.append(choice.message)
 
-        for tool_call in choice.message.tool_calls:
-            tool_name = tool_call.function.name
-            try:
-                arguments = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                arguments = {}
+            for tool_call in choice.message.tool_calls:
+                tool_name = tool_call.function.name
+                try:
+                    arguments = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
 
-            result = await self._execute_tool(tool_name, arguments)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": json.dumps(result or {}, ensure_ascii=False),
-            })
+                try:
+                    result = await self._execute_tool(tool_name, arguments)
+                except Exception as e:
+                    # 工具异常不让请求 500，把错误交回模型让它如实回答
+                    print(f"[_process_response] 工具 {tool_name} 执行失败: {e}")
+                    result = {"错误": f"查询失败，请稍后重试"}
 
-        final_response = await self.client.chat.completions.create(
-            model=self.model, messages=messages,
-        )
-        return final_response.choices[0].message.content or ""
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result or {}, ensure_ascii=False),
+                })
+
+            response = await self.client.chat.completions.create(
+                model=self.model, messages=messages,
+            )
+
+        return "抱歉，这次查询步骤太多，请把问题拆小一点再问我。"
 
     @abstractmethod
     async def _execute_tool(self, tool_name: str, arguments: dict) -> dict:

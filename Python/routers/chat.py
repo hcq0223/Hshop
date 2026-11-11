@@ -40,6 +40,27 @@ def _get_agent(token: str):
     return agent
 
 
+def _resolve_identity(token: str):
+    """
+    一次解析出 (user_id, role, agent)。
+
+    token 无效/过期统一转 401——必须在这里抛，
+    因为 chat_stream 一旦进入 StreamingResponse，
+    HTTP 状态码已经发出去了，再抛什么都只能变成 200 + 文本错误。
+    """
+    try:
+        # 解析用户身份
+        user_id = get_user_id_from_token(token)
+        role = get_role_from_token(token)
+
+        # 获取对应角色的 Agent
+        agent = _get_agent(token)
+    except ValueError:
+        # 不回显 jose 的原始异常文本，避免泄漏内部细节
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录")
+    return user_id, role, agent
+
+
 # ============================================
 # 普通对话接口（非流式）
 # ============================================
@@ -55,19 +76,15 @@ async def chat(request: ChatRequest, req: Request):
     if not token:
         raise HTTPException(status_code=401, detail="未提供认证 Token")
 
-    # 解析用户身份
-    user_id = get_user_id_from_token(token)
-    role = get_role_from_token(token)
-
-    # 获取对应角色的 Agent
-    agent = _get_agent(token)
+    # 解析用户身份（token 无效 → 401）
+    user_id, role, agent = _resolve_identity(token)
 
     # 执行对话
     reply = await agent.chat(
         user_id=user_id,
         message=request.message,
         token=token,
-        history=[h.model_dump() for h in (request.history or [])],
+        history=[h.model_dump() for h in (request.history or [])][-20:],
     )
 
     return ChatResponse(reply=reply, role=role)
@@ -90,15 +107,14 @@ async def chat_stream(request: ChatRequest, req: Request):
     if not token:
         raise HTTPException(status_code=401, detail="未提供认证 Token")
 
-    user_id = get_user_id_from_token(token)
-    agent = _get_agent(token)
+    user_id, _, agent = _resolve_identity(token)
 
     return StreamingResponse(
         agent.chat_stream(
             user_id=user_id,
             message=request.message,
             token=token,
-            history=[h.model_dump() for h in (request.history or [])],
+            history=[h.model_dump() for h in (request.history or [])][-20:],
         ),
         media_type="text/event-stream",
         headers={

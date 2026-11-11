@@ -150,7 +150,7 @@ class MerchantAgent(BaseAgent):
                     method="GET",
                     path="/merchant/withdraws",
                 )
-                if result.get("code") == 200 and result.get("data"):
+                if result.get("code") == 200 and result.get("data") is not None:
                     data = result["data"]  #list
                     withdraws = []
                     for w in data:
@@ -177,7 +177,7 @@ class MerchantAgent(BaseAgent):
                     method="GET",
                     path="/merchant/weekly-revenue",
                 )
-                if result.get("code") == 200 and result.get("data"):
+                if result.get("code") == 200 and result.get("data") is not None:
                     data = result["data"]
                     weekly_revenues = []
                     for w in data:
@@ -190,7 +190,7 @@ class MerchantAgent(BaseAgent):
                             "本周订单数": w.get("totalOrders"),
                             "归档时间": w.get("createdAt"),
                         })
-                    return {"历史周营收数": data.get("total", len(weekly_revenues)), "历史周营收列表": weekly_revenues}
+                    return {"历史周营收数": len(weekly_revenues), "历史周营收列表": weekly_revenues}
                 else:
                     return {"错误": result.get("message", "历史周营收接口返回异常")}
             except Exception as e:
@@ -286,7 +286,7 @@ class MerchantAgent(BaseAgent):
                     method="GET",
                     path=f"/product/merchant/{merchant_id}",
                 )
-                if result.get("code") == 200 and result.get("data"):
+                if result.get("code") == 200 and result.get("data") is not None:
                     products = result["data"] if isinstance(result["data"], list) else result["data"].get("records", [])
                     product_list = []
                     for p in products:

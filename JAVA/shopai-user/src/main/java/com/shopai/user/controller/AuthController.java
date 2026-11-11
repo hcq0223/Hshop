@@ -44,7 +44,7 @@ public class AuthController {
      */
     private boolean isRateLimited(Long userId) {
         try {
-            return redisService.recordLoginFail(userId) > 5;
+            return redisService.recordLoginFail(userId) >= 5;
         } catch (Exception e) {
             log.warn("Redis: {}", e.getMessage());
             return false;

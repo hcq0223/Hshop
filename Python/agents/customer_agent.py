@@ -341,7 +341,7 @@ class CustomerAgent(BaseAgent):
                 )
                 if result.get("code") == 200 and result.get("data"):
                     data = result["data"]
-                    gender_map = {"male": "女", "female": "男", "other": "其他"}
+                    gender_map = {"male": "男", "female": "女", "other": "其他"}
                     raw_gender = data.get("gender")
                     gender_display = gender_map.get(raw_gender, "未知")
                     return {
@@ -424,7 +424,7 @@ class CustomerAgent(BaseAgent):
                     method="GET",
                     path="/address/addressList",
                 )
-                if result.get("code") == 200 and result.get("data"):
+                if result.get("code") == 200 and result.get("data") is not None:
                     data = result["data"]
                     addresses = []
                     for address in data:
@@ -443,7 +443,7 @@ class CustomerAgent(BaseAgent):
                         "地址数量": len(addresses),
                         "地址列表": addresses
                     }
-                return {"错误": result.get("message", "查询地址列表信息失败")}
+                return {"错误": result.get("message", "查询地址列表信息失败") or "查询失败"}
             except Exception as e:
                 return {"错误": f"调用接口异常: {str(e)}"}
 
@@ -555,7 +555,7 @@ class CustomerAgent(BaseAgent):
                             "商品状态": product.get("status"),
                         })
                     return {"购物车商品数": len(items), "购物车列表": items}
-                return {"错误": result.get("message")}
+                return {"错误": result.get("message") or "查询失败"}
             except Exception as e:
                 return {"错误": str(e)}
 
@@ -645,7 +645,7 @@ class CustomerAgent(BaseAgent):
                     path="/product/hot",
                     params={"limit": limit},
                 )
-                if result.get("code") == 200 and result.get("data"):
+                if result.get("code") == 200 and result.get("data") is not None:
                     hot_list = []
                     for p in result["data"]:
                         hot_list.append({
@@ -737,7 +737,7 @@ class CustomerAgent(BaseAgent):
                 )
                 if result.get("code") == 200:
                     return {"成功": "已添加到购物车"}
-                return {"错误": result.get("message")}
+                return {"错误": result.get("message") or "查询失败"}
             except Exception as e:
                 return {"错误": str(e)}
 

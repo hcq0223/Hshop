@@ -241,7 +241,11 @@ ADMIN_TOOLS = [
                 "type": "object",
                 "properties": {
                     "merchantId": {"type": "string", "description": "商家ID（从待审核列表获取，不可暴露给普通用户）"},
-                    "verified": {"type": "integer", "description": "1=通过，0=拒绝"}
+                    "verified": {"type": "integer", "description": "1=通过，0=拒绝"},
+                    "confirmCode": {
+                        "type": "string",
+                        "description": "确认码。首次调用不要传；向管理员复述并获得明确同意后，把上次返回的确认码带回来",
+                    },
                 },
                 "required": ["merchantId", "verified"]
             }

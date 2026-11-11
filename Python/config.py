@@ -18,19 +18,12 @@ class Settings:
     OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o")
 
+    # 仅本地模型（Ollama/qwen）需要；云端模型用原生 function calling【默认关闭文本工具调用】
+    TEXT_TOOL_CALL_ENABLED: bool = os.getenv("TEXT_TOOL_CALL_ENABLED", "false").lower() == "true"
+
     # ========== JWT ==========
     JWT_SECRET: str = os.getenv("JWT_SECRET", "")
     JWT_ALGORITHM: str = "HS256"
-
-    # ========== MySQL ==========
-    # ⚠️ 微服务拆分后已废弃：Java 侧各服务只访问自己的库，
-    #    Agent 不再直连数据库，全部经 JAVA_API_BASE（网关）走 HTTP。
-    #    见 core/database.py 顶部说明。保留仅兼容旧脚本。
-    MYSQL_HOST: str = os.getenv("MYSQL_HOST", "localhost")
-    MYSQL_PORT: int = int(os.getenv("MYSQL_PORT", "3306"))
-    MYSQL_USER: str = os.getenv("MYSQL_USER", "root")
-    MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "")
-    MYSQL_DATABASE: str = os.getenv("MYSQL_DATABASE", "hcq_shop")
 
     # ========== Java 后端 ==========
     JAVA_API_BASE: str = os.getenv("JAVA_API_BASE", "http://localhost:8080/api")

@@ -171,10 +171,7 @@ public final class SeckillRedisKeys {
             -- 扣减成功后才记入已购数量，保证失败不影响后续重试
             redis.call('HINCRBY', boughtKey, field, qty)
 
-            -- 给「已购集合」补过期时间。
-            -- 这个 Hash 是懒创建的：预热时它还不存在，那时调 EXPIRE 只会打空，
-            -- 所以只能在这里设。不设的话它会【永不过期】（TTL = -1），
-            -- 每个活动都留一个再也用不到的 Hash 常驻 Redis。
+            -- 给「已购集合」加过期时间。
             -- TTL 由调用方按「活动结束时间 + 宽限」算好传进来，每次抢购都重设成
             -- 同一个目标时刻，不会因为反复抢购而无限延长。
             if boughtTtl ~= nil and boughtTtl > 0 then

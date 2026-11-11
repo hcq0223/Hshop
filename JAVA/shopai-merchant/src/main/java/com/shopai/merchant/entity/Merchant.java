@@ -42,18 +42,6 @@ public class Merchant {
     /** 0:未认证 1:已认证 */
     private Integer isVerified;
 
-    /*
-     * 资金字段刻意**不给** `= BigDecimal.ZERO` 初值。
-     *
-     * 原因：MyBatis-Plus 的 updateById 用 NOT_NULL 策略决定哪些列参与 UPDATE，
-     * 它只跳过 null，不跳过 0。一旦这些字段有 0 初值，任何「new Merchant() 只设几个字段
-     * 再 updateById」的局部更新都会把它们一并写成 0 —— 真实事故就是把商家全部资金抹平。
-     * 保持 null 则这些列在局部更新时被跳过，真正需要变更资金一律走
-     * MerchantMapper.changeFundsAtomic（原子增量）。
-     *
-     * 插入时无需担心：三列在库里都是 NOT NULL DEFAULT 0.00，
-     * MP 跳过 null 字段后由数据库默认值兜底。
-     */
     private BigDecimal totalRevenue;
     private BigDecimal availableBalance;
     private BigDecimal frozenBalance;

@@ -8,6 +8,15 @@
 # ============================================
 
 from services.java_api import call_java_api
+import hashlib, secrets, time
+
+_PENDING_CONFIRM: dict = {}
+_CONFIRM_TTL = 120  # 秒
+
+
+def _fp(token: str) -> str:
+    """token 指纹，避免把明文 token 存进内存"""
+    return hashlib.sha256((token or "").encode()).hexdigest()[:16]
 
 
 # ────────────────────────────────────────────
@@ -213,16 +222,57 @@ async def get_pending_withdraws(token: str, arguments: dict) -> dict:
     return {"错误": result.get("message")}
 
 
+# async def verify_merchant(token: str, arguments: dict) -> dict:
+#     """审核商家认证（管理员本职，调用方需先确认后执行）"""
+#     merchant_id = arguments.get("merchantId")
+#     result = await call_java_api(
+#         token=token,
+#         method="PUT",
+#         path=f"/admin/merchants/{merchant_id}/verify",
+#         params={
+#             "verified": arguments.get("verified"),
+#         },
+#     )
+#     if result.get("code") == 200:
+#         return {"成功": result.get("message", "商家审核完成")}
+#     return {"错误": result.get("message")}
+
 async def verify_merchant(token: str, arguments: dict) -> dict:
-    """审核商家认证（管理员本职，调用方需先确认后执行）"""
     merchant_id = arguments.get("merchantId")
+    verified = arguments.get("verified")
+    code = arguments.get("confirmCode")
+
+    # 第一阶段：只预览，绝不执行
+    if not code:
+        code = secrets.token_hex(3).upper()
+        _PENDING_CONFIRM[code] = {
+            "fp": _fp(token),
+            "tool": "verify_merchant",
+            "args": {"merchantId": merchant_id, "verified": verified},
+            "expire": time.time() + _CONFIRM_TTL,
+        }
+        return {
+            "需要确认": True,
+            "确认码": code,
+            "待执行操作": f"{'审核通过' if verified == 1 else '审核拒绝'}商家 {merchant_id}",
+            "提示": "请向管理员复述以上内容；管理员明确同意后，带上 confirmCode 再调用一次才会真正执行",
+        }
+
+    # 第二阶段：校验确认码
+    rec = _PENDING_CONFIRM.pop(code, None)
+    if not rec:
+        return {"错误": "确认码无效或已使用，请重新发起确认"}
+    if rec["expire"] < time.time():
+        return {"错误": "确认码已过期，请重新发起确认"}
+    if rec["fp"] != _fp(token):
+        return {"错误": "确认码不属于当前操作人"}
+    if rec["tool"] != "verify_merchant" or rec["args"] != {"merchantId": merchant_id, "verified": verified}:
+        return {"错误": "确认码与本次操作不匹配"}
+
     result = await call_java_api(
-        token=token,
-        method="PUT",
+        token=token, method="PUT",
         path=f"/admin/merchants/{merchant_id}/verify",
-        params={
-            "verified": arguments.get("verified"),
-        },
+        params={"verified": verified},
     )
     if result.get("code") == 200:
         return {"成功": result.get("message", "商家审核完成")}
@@ -235,33 +285,51 @@ async def verify_merchant(token: str, arguments: dict) -> dict:
 
 async def get_all_orders(token: str, arguments: dict) -> dict:
     """分页查询全平台订单，可按状态筛选"""
-    params = {
-        "page": arguments.get("page", 1),
-        "size": arguments.get("size", 200),
-    }
-    if arguments.get("status"):
-        params["status"] = arguments["status"]
+    try:
+        page = max(1, int(arguments.get("page") or 1))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        size = int(arguments.get("size") or 20)
+    except (TypeError, ValueError):
+        size = 20
+    size = max(1, min(size, 50))
+
+    params = {"page": page, "size": size}
+    status = arguments.get("status")
+    if status:
+        params["status"] = status
+
     result = await call_java_api(
         token=token,
         method="GET",
         path="/order/admin/orders",
         params=params,
     )
-    if result.get("code") == 200 and result.get("data"):
-        data = result["data"]
-        records = data.get("records", [])
-        order_list = []
-        for o in records:
-            order_list.append({
-                "订单号": o.get("orderNo"),
-                "金额": o.get("payAmount") or o.get("totalAmount"),
-                "状态": o.get("status"),
-                "下单时间": o.get("createTime"),
-                "顾客ID": o.get("customerId"),
-                "商家ID": o.get("merchantId"),
-            })
-        return {"总条数": data.get("total", len(order_list)), "订单列表": order_list}
-    return {"错误": result.get("message", "查询全平台订单失败")}
+    if result.get("code") != 200:
+        return {"错误": result.get("message", "查询全平台订单失败")}
+
+    # 注意：该接口返回 List<Order> 而非 MyBatis-Plus 的 Page；
+    # 且带 status 筛选时后端会忽略 page/size 返回全量，所以这里统一按 list 处理再本地截断。
+    data = result.get("data")
+    records = data if isinstance(data, list) else (data or {}).get("records", [])
+
+    order_list = [
+        {
+            "订单号": o.get("orderNo"),
+            "金额": o.get("payAmount") or o.get("totalAmount"),
+            "状态": o.get("status"),
+            "下单时间": o.get("createTime"),
+            "顾客ID": o.get("customerId"),
+            "商家ID": o.get("merchantId"),
+        }
+        for o in records[:size]
+    ]
+    return {
+        "返回条数": len(order_list),
+        "订单列表": order_list,
+        "说明": f"最多返回 {size} 条；如结果被截断，请用 status 筛选或翻页缩小范围",
+    }
 
 
 async def get_all_order_history(token: str, arguments: dict) -> dict:
@@ -274,7 +342,12 @@ async def get_all_order_history(token: str, arguments: dict) -> dict:
     if result.get("code") == 200:
         data = result.get("data") or []
         records = data if isinstance(data, list) else data.get("records", [])
-        return {"历史订单数": len(records), "历史订单列表": records}
+        total = len(records)
+        return {
+            "历史订单总数": total,
+            "已返回条数": min(total, 50),
+            "历史订单列表": records[:50],
+        }
     return {"错误": result.get("message", "查询全平台订单历史失败")}
 
 

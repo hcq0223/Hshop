@@ -32,7 +32,7 @@
 | Redis | 6/7.x | 127.0.0.1:6379 |
 | RabbitMQ | 3.x | 127.0.0.1:5672，guest/guest |
 | Nacos | **2.3.2** | 与 SCA 2023.0.1.0 客户端对齐；**不要用 3.0** |
-| Seata Server | **2.0.0** | 事务分组 `shopai_tx_group`；相关库建 `undo_log` 表 |
+| Seata Server | **2.0.0** | 事务分组 `default_tx_group`；相关库建 `undo_log` 表 |
 | Elasticsearch | **8.11.x + IK 8.11.x** | 见 `es-index-setup.md`；**7.12.1 不兼容** |
 | Nginx | **1.24+**（1.18 也可，建议升级） | 见下文 |
 

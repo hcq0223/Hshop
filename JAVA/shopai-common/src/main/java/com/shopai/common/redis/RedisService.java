@@ -659,7 +659,7 @@ public class RedisService {
     public int recordLoginFail(Long userId) {
         String k = buildLoginFailKey(userId);
         Long c = redis.opsForValue().increment(k, 1);
-        if (c != null && c == 1) redis.expire(k, 50, TimeUnit.MINUTES);
+        if (c != null && c == 5) redis.expire(k, 50, TimeUnit.MINUTES);
         return c != null ? c.intValue() : 0;
     }
 
